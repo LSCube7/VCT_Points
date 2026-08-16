@@ -1,16 +1,18 @@
 import "server-only";
 
-import { createHmac, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { eq } from "drizzle-orm";
 import {
   ClientSecretBasic,
   calculatePKCECodeChallenge,
+  customFetch,
   discovery,
   fetchUserInfo,
   randomNonce,
   randomPKCECodeVerifier,
   randomState,
+  type CustomFetch,
   type Configuration,
 } from "openid-client";
 import { adminSessions } from "../../db/schema";
@@ -34,17 +36,73 @@ export function getRedirectUri(origin?: string): string {
   return `${(process.env.NEXT_PUBLIC_APP_URL ?? origin ?? "http://localhost:3000").replace(/\/$/, "")}/api/auth/callback`;
 }
 
+function fingerprint(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : createHash("sha256").update(value).digest("hex").slice(0, 12);
+}
+
+function getHeader(headers: Record<string, string>, name: string): string | undefined {
+  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name.toLowerCase());
+  return entry?.[1];
+}
+
+function getPresentedClientId(options: Parameters<CustomFetch>[1]): { basic?: string; form?: string; bodyKeys: string[] } {
+  let basic: string | undefined;
+  const authorization = getHeader(options.headers, "authorization");
+  if (authorization?.toLowerCase().startsWith("basic ")) {
+    try {
+      const decoded = Buffer.from(authorization.slice(6).trim(), "base64").toString("utf8");
+      const separator = decoded.indexOf(":");
+      if (separator > 0) basic = decoded.slice(0, separator);
+    } catch {
+      // The diagnostic intentionally ignores malformed credentials.
+    }
+  }
+
+  let form: string | undefined;
+  const body = options.body;
+  if (body instanceof URLSearchParams) {
+    form = body.get("client_id") ?? undefined;
+  } else if (typeof body === "string") {
+    form = new URLSearchParams(body).get("client_id") ?? undefined;
+  }
+
+  const bodyKeys = body instanceof URLSearchParams
+    ? [...body.keys()].sort()
+    : typeof body === "string"
+      ? [...new URLSearchParams(body).keys()].sort()
+      : [];
+  return { basic, form, bodyKeys };
+}
+
+function createDevelopmentOidcFetch(clientId: string): CustomFetch {
+  return async (url, options) => {
+    if (new URL(url).pathname.endsWith("/api/oidc/token")) {
+      const presented = getPresentedClientId(options);
+      console.error("[auth.oidc.request] " + JSON.stringify({
+        endpoint: "token",
+        configuredClientIdFingerprint: fingerprint(clientId),
+        basicClientIdFingerprint: fingerprint(presented.basic),
+        formClientIdFingerprint: fingerprint(presented.form),
+        bodyKeys: presented.bodyKeys,
+      }));
+    }
+    return globalThis.fetch(url, options as RequestInit);
+  };
+}
+
 export async function getOidcConfiguration(redirectUri: string): Promise<Configuration> {
   const issuer = process.env.LSCUBE_OIDC_ISSUER;
   const clientId = process.env.LSCUBE_OIDC_CLIENT_ID;
   const clientSecret = process.env.LSCUBE_OIDC_CLIENT_SECRET;
   if (!issuer || !clientId || !clientSecret) throw new Error("OIDC_NOT_CONFIGURED");
-  return discovery(
+  const configuration = await discovery(
     new URL(issuer),
     clientId,
     { redirect_uris: [redirectUri], response_types: ["code"], token_endpoint_auth_method: "client_secret_basic" },
     ClientSecretBasic(clientSecret),
   );
+  if (process.env.NODE_ENV !== "production") configuration[customFetch] = createDevelopmentOidcFetch(clientId);
+  return configuration;
 }
 
 export async function createOidcTransaction(redirectUri: string): Promise<OidcTransaction> {

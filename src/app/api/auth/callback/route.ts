@@ -36,6 +36,7 @@ function classifyCallbackError(stage: CallbackStage, error: unknown): { code: st
   const rawMessage = error instanceof Error ? error.message : "";
   const oauthError = getErrorField(error, "error");
   const oauthCode = getErrorField(error, "code");
+  const oauthDescription = getErrorField(error, "error_description") ?? "";
 
   if (rawMessage === "FORBIDDEN") {
     return { code: "FORBIDDEN", status: 403, message: "当前账号没有赛事管理权限" };
@@ -58,6 +59,9 @@ function classifyCallbackError(stage: CallbackStage, error: unknown): { code: st
       return { code: "OIDC_CLIENT_AUTH_FAILED", status: 503, message: "OAuth 客户端认证失败，请检查客户端密钥" };
     }
     if (oauthError === "invalid_grant") {
+      if (/client\s+id\s+mismatch/i.test(oauthDescription)) {
+        return { code: "OIDC_CLIENT_ID_MISMATCH", status: 400, message: "当前登录服务与授权页面使用的客户端配置不一致，请重启应用后从登录入口重新登录" };
+      }
       return { code: "OIDC_INVALID_GRANT", status: 400, message: "授权码已失效或校验不匹配，请从登录入口重新开始" };
     }
     if (oauthCode === "OAUTH_INVALID_RESPONSE" && /state/i.test(rawMessage)) {
