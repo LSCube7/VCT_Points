@@ -10,6 +10,9 @@
 - Stage 2 直接晋级、冠军积分晋级、同分比较顺序和基础聚类接口；
 - 中英文公开页面、赛区概览、ECharts 概率图、方法说明页；
 - 全年赛事结果表格，支持逐地图回合比分录入；
+- 管理后台使用 MUI：小组赛/Swiss 为列表，淘汰赛为可编辑对阵图；
+- 2026 Masters Santiago / London 建模为全球 12 队、8 队 Swiss、8 队双败淘汰，不再按赛区重复生成；
+- 支持配置小组分组、淘汰赛起始轮次、队伍名称/简称/地区及压缩 Logo；Logo 暂随草稿 JSON 保存；
 - LSCube_OAuth PKCE 登录回调、邮箱 allowlist、数据库会话模型；
 - 草稿 revision、分析结果分块上传、发布校验和缓存标签失效接口。
 
@@ -61,4 +64,3 @@ OAuth 回调地址为 `${NEXT_PUBLIC_APP_URL}/api/auth/callback`。PR Preview �
 - [Liquipedia VCT 2026 Championship Points](https://liquipedia.net/valorant/VCT/2026/Championship_Points)
 
 规则版本和引擎版本会随发布快照保存。若官方同分规则无法唯一确定，发布会被阻止，管理员必须提供官方裁决说明。
-

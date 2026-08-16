@@ -15,7 +15,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: L
   const chartData = snapshot.regions.flatMap((analysis) => analysis.teamProbabilities.slice(0, 2).map((item) => ({ name: `${analysis.region.toUpperCase()} · ${teamNames.get(item.teamId) ?? item.teamId}`, value: item.probability.percentage, color: regions.find((region) => region.id === analysis.region)?.color })));
   return (
     <Container maxWidth="xl" sx={{ py: { xs: 4, md: 8 } }}>
-      <Box className="vct-grid" sx={{ border: "1px solid var(--vct-border)", borderRadius: 4, p: { xs: 3, md: 6 }, mb: 4, overflow: "hidden", position: "relative" }}>
+      <Card sx={{ mb: 4 }}><CardContent sx={{ p: { xs: 3, md: 6 } }}>
         <Stack spacing={2} maxWidth={760}>
           <Chip label={copy.preview} color="primary" variant="outlined" sx={{ alignSelf: "flex-start" }} />
           <Typography variant="h1" sx={{ fontSize: { xs: "2.6rem", md: "5rem" }, lineHeight: 0.98 }}>谁会去 Champions？</Typography>
@@ -26,7 +26,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: L
             <Link href={`/${locale}/methodology`}><Button variant="outlined" startIcon={<Insights />}>{copy.methodology}</Button></Link>
           </Stack>
         </Stack>
-      </Box>
+      </CardContent></Card>
 
       <Grid container spacing={2} mb={4}>
         {[
@@ -48,7 +48,7 @@ export default async function HomePage({ params }: { params: Promise<{ locale: L
           <Stack spacing={2}>
             {regions.map((region) => (
               <Link key={region.id} href={`/${locale}/regions/${region.id}`}>
-                <Card sx={{ borderLeft: `4px solid ${region.color}`, transition: "transform .2s", "&:hover": { transform: "translateX(4px)" } }}><CardContent><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6">{region.name}</Typography><Typography variant="body2" color="text.secondary">{copy.slots}: 4 · {copy.pending}</Typography></Box><ArrowForward color="action" /></Stack></CardContent></Card>
+                <Card sx={{ borderLeft: `4px solid ${region.color}` }}><CardContent><Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="h6">{region.name}</Typography><Typography variant="body2" color="text.secondary">{copy.slots}: 4 · {copy.pending}</Typography></Box><ArrowForward color="action" /></Stack></CardContent></Card>
               </Link>
             ))}
           </Stack>

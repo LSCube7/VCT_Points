@@ -15,6 +15,13 @@
       "when": 1786897094823,
       "tag": "0001_wild_wiccan",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786901974266,
+      "tag": "0002_blushing_violations",
+      "breakpoints": true
     }
   ]
 }

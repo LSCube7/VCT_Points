@@ -10,21 +10,16 @@ import type { Locale } from "@/lib/types";
 
 const theme = createTheme({
   cssVariables: true,
-  palette: {
-    mode: "dark",
-    primary: { main: "#ff4655" },
-    background: { default: "#090b10", paper: "#11151d" },
-    text: { primary: "#f4f6f8", secondary: "#9aa5b5" },
-  },
+  palette: { mode: "light", primary: { main: "#1976d2" }, secondary: { main: "#7b1fa2" }, background: { default: "#f5f7fb", paper: "#ffffff" }, text: { primary: "#17202a", secondary: "#5f6b7a" } },
   typography: {
-    fontFamily: "Arial, Helvetica, sans-serif",
-    h1: { fontWeight: 800, letterSpacing: "-0.04em" },
-    h2: { fontWeight: 750, letterSpacing: "-0.03em" },
+    fontFamily: "Roboto, Arial, Helvetica, sans-serif",
+    h1: { fontWeight: 700 },
+    h2: { fontWeight: 700 },
     h3: { fontWeight: 700 },
   },
-  shape: { borderRadius: 12 },
+  shape: { borderRadius: 8 },
   components: {
-    MuiCard: { styleOverrides: { root: { border: "1px solid rgba(255,255,255,.08)", backgroundImage: "none" } } },
+    MuiCard: { styleOverrides: { root: { border: "1px solid #e2e8f0", backgroundImage: "none" } } },
     MuiButton: { defaultProps: { disableElevation: true } },
   },
 });

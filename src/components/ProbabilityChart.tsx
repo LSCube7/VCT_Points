@@ -23,9 +23,9 @@ export function ProbabilityChart({
       animationDuration: 350,
       grid: { top: 12, right: 18, bottom: 24, left: 96 },
       tooltip: { trigger: "axis", valueFormatter: (value: number) => `${value.toFixed(2)}%` },
-      xAxis: { type: "value", max: 100, axisLabel: { color: "#9aa5b5", formatter: "{value}%" }, splitLine: { lineStyle: { color: "rgba(255,255,255,.08)" } } },
-      yAxis: { type: "category", data: data.map((item) => item.name), axisLabel: { color: "#dfe5ed" } },
-      series: [{ type: "bar", data: data.map((item) => ({ value: item.value, itemStyle: { color: item.color ?? "#ff4655", borderRadius: [0, 5, 5, 0] } })), barMaxWidth: 24 }],
+      xAxis: { type: "value", max: 100, axisLabel: { color: "#5f6b7a", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#e2e8f0" } } },
+      yAxis: { type: "category", data: data.map((item) => item.name), axisLabel: { color: "#17202a" } },
+      series: [{ type: "bar", data: data.map((item) => ({ value: item.value, itemStyle: { color: item.color ?? "#1976d2", borderRadius: [0, 5, 5, 0] } })), barMaxWidth: 24 }],
     });
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);

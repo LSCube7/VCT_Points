@@ -26,7 +26,7 @@ export default async function RegionPage({ params }: { params: Promise<{ locale:
       <Stack spacing={2} mb={4}>
         <Link href={`/${locale}`}><Button startIcon={<ArrowBack />} sx={{ alignSelf: "flex-start" }}>{copy.overview}</Button></Link>
         <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2}>
-          <Box><Stack direction="row" spacing={1} alignItems="center"><Box sx={{ width: 12, height: 32, bgcolor: data.metadata.color, transform: "skew(-14deg)" }} /><Typography variant="h2">{data.metadata.name}</Typography><Chip label={copy.preview} size="small" variant="outlined" /></Stack><Typography color="text.secondary" mt={1}>{copy.slots}: 4 · Stage 2 Play-In → Playoffs</Typography></Box>
+          <Box><Stack direction="row" spacing={1} alignItems="center"><Box sx={{ width: 12, height: 32, bgcolor: data.metadata.color, borderRadius: 1 }} /><Typography variant="h2">{data.metadata.name}</Typography><Chip label={copy.preview} size="small" variant="outlined" /></Stack><Typography color="text.secondary" mt={1}>{copy.slots}: 4 · Stage 2 Play-In → Playoffs</Typography></Box>
           <Stack direction="row" spacing={1}><Chip icon={<Lock />} label={copy.unpublished} /><Chip icon={<TableChart />} label={`${data.analysis.scenarioGroups.length} ${copy.scenario}`} variant="outlined" /></Stack>
         </Stack>
       </Stack>

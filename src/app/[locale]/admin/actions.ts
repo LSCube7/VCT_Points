@@ -5,7 +5,7 @@ import { eq, desc } from "drizzle-orm";
 import { auditLogs, draftVersions } from "../../../../db/schema";
 import { getDb } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
-import { draftPayloadSchema } from "@/lib/validation";
+import { draftPayloadSchema, validateMatchResult } from "@/lib/validation";
 
 export interface AdminActionResult {
   ok: boolean;
@@ -15,7 +15,9 @@ export interface AdminActionResult {
 }
 
 function stableJson(value: unknown): string {
-  return JSON.stringify(value, Object.keys(value as object).sort());
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableJson(item)).join(",")}]`;
+  return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
 }
 
 export async function validateDraft(payload: unknown): Promise<AdminActionResult> {
@@ -23,14 +25,10 @@ export async function validateDraft(payload: unknown): Promise<AdminActionResult
   if (!parsed.success) {
     return { ok: false, code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "草稿数据格式错误" };
   }
-  const invalidMatch = parsed.data.matches.find((match) => {
-    if (match.status === "completed" && !match.winner) return true;
-    if (match.status === "completed" && match.maps.length === 0) return true;
-    return false;
-  });
-  return invalidMatch
-    ? { ok: false, code: "VALIDATION_ERROR", message: `比赛 ${invalidMatch.id} 缺少完赛信息` }
-    : { ok: true, revision: parsed.data.revision };
+  const invalidMatch = parsed.data.matches.map((match) => ({ match, result: validateMatchResult(match) })).find(({ result }) => !result.success);
+  if (!invalidMatch) return { ok: true, revision: parsed.data.revision };
+  const validationError = invalidMatch.result.success ? new Error("比赛结果无效") : invalidMatch.result.error;
+  return { ok: false, code: "VALIDATION_ERROR", message: `比赛 ${invalidMatch.match.id}：${validationError.message}` };
 }
 
 export async function saveDraft(payload: unknown): Promise<AdminActionResult> {

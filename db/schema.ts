@@ -20,6 +20,8 @@ export const teams = pgTable("teams", {
   name: text("name").notNull(),
   shortName: text("short_name").notNull(),
   color: text("color").notNull(),
+  country: text("country"),
+  logoUrl: text("logo_url"),
   active: integer("active").notNull().default(1),
 });
 

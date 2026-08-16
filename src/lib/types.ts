@@ -1,9 +1,14 @@
 export const REGION_IDS = ["amer", "emea", "pacific", "china"] as const;
 export type RegionId = (typeof REGION_IDS)[number];
+export type MatchRegion = RegionId | "global";
 
 export type Locale = "zh-CN" | "en";
 export type MatchStatus = "scheduled" | "completed" | "forfeit" | "cancelled";
 export type QualificationMethod = "stage2-winner" | "stage2-runner-up" | "championship-points";
+export type MatchPhase = "group" | "swiss" | "playoffs";
+export type TournamentScope = "regional" | "international";
+export type TournamentFormat = "triple-elimination" | "group-plus-playoffs" | "swiss-plus-playoffs";
+export type BracketStartRound = "quarterfinals" | "semifinals";
 
 export interface Team {
   id: string;
@@ -12,6 +17,8 @@ export interface Team {
   shortName: string;
   color: string;
   active: boolean;
+  country?: string;
+  logoUrl?: string;
 }
 
 export interface MapScore {
@@ -23,7 +30,7 @@ export interface MapScore {
 export interface MatchResult {
   id: string;
   eventId: string;
-  region: RegionId;
+  region: MatchRegion;
   stage: "kickoff" | "masters-1" | "stage-1" | "masters-2" | "stage-2" | "champions";
   teamA: string;
   teamB: string;
@@ -34,6 +41,44 @@ export interface MatchResult {
   isTiebreaker: boolean;
   playedAt?: string;
   notes?: string;
+  phase?: MatchPhase;
+  groupId?: string;
+  roundLabel?: string;
+  bracketRound?: string;
+  bestOf?: 3 | 5;
+}
+
+export interface GroupConfig {
+  id: string;
+  name: string;
+  teamIds: string[];
+}
+
+export interface BracketConfig {
+  type: "single-elimination" | "double-elimination" | "triple-elimination";
+  startRound: BracketStartRound;
+  teamRefs: string[];
+}
+
+export interface TournamentConfig {
+  id: string;
+  eventId: string;
+  name: string;
+  scope: TournamentScope;
+  format: TournamentFormat;
+  groupStage?: {
+    groups: GroupConfig[];
+    bestOf: 3 | 5;
+  };
+  bracket?: BracketConfig;
+}
+
+export interface DraftPayload {
+  seasonId: string;
+  revision: number;
+  matches: MatchResult[];
+  teams: Team[];
+  tournaments: TournamentConfig[];
 }
 
 export interface TeamRankingMetrics {

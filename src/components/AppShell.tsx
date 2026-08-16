@@ -8,11 +8,11 @@ export function AppShell({ locale, children }: { locale: Locale; children: React
   const otherLocale = locale === "zh-CN" ? "en" : "zh-CN";
   return (
     <Box sx={{ minHeight: "100vh" }}>
-      <Box component="header" sx={{ borderBottom: "1px solid var(--vct-border)", backgroundColor: "rgba(9,11,16,.82)", backdropFilter: "blur(14px)", position: "sticky", top: 0, zIndex: 10 }}>
+      <Box component="header" sx={{ borderBottom: "1px solid", borderColor: "divider", backgroundColor: "background.paper", position: "sticky", top: 0, zIndex: 10 }}>
         <Container maxWidth="xl" sx={{ py: 1.5 }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={2} justifyContent="space-between" alignItems={{ sm: "center" }}>
             <Stack direction="row" spacing={1.5} alignItems="center">
-              <Box sx={{ width: 10, height: 34, bgcolor: "primary.main", transform: "skew(-14deg)" }} aria-hidden />
+              <Box sx={{ width: 10, height: 34, bgcolor: "primary.main", borderRadius: 1 }} aria-hidden />
               <Box>
                 <Typography variant="subtitle1" fontWeight={800}>{copy.appName}</Typography>
                 <Typography variant="caption" color="text.secondary">{copy.subtitle}</Typography>
@@ -28,7 +28,7 @@ export function AppShell({ locale, children }: { locale: Locale; children: React
         </Container>
       </Box>
       <Box component="main">{children}</Box>
-      <Divider sx={{ borderColor: "var(--vct-border)" }} />
+      <Divider />
       <Container component="footer" maxWidth="xl" sx={{ py: 3 }}>
         <Typography variant="caption" color="text.secondary">VCT 2026 · {copy.exactModel}</Typography>
       </Container>

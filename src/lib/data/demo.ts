@@ -15,19 +15,24 @@ export const regions: Array<{ id: RegionId; name: string; color: string }> = [
   { id: "china", name: "CN", color: "#ffb74d" },
 ];
 
+export function allDemoTeams(): Team[] {
+  return regions.flatMap(({ id }) => demoTeams(id));
+}
+
 export function demoTeams(region: RegionId): Team[] {
-  return Array.from({ length: 8 }, (_, index) => ({
+  return Array.from({ length: 12 }, (_, index) => ({
     id: `${region}-team-${index + 1}`,
     region,
     name: `${regionNames[region]} 待录入队伍 ${String(index + 1).padStart(2, "0")}`,
     shortName: `${regionNames[region]}-${index + 1}`,
     color: regions.find((item) => item.id === region)?.color ?? "#90a4ae",
     active: true,
+    country: "",
   }));
 }
 
 export function demoSimulation(region: RegionId): RegionSimulationInput {
-  const teams = demoTeams(region).map((team, index) => ({
+  const teams = demoTeams(region).slice(0, 8).map((team, index) => ({
     id: team.id,
     name: team.name,
     basePoints: 30 - index * 2,
@@ -60,4 +65,3 @@ export function demoSimulation(region: RegionId): RegionSimulationInput {
 export function demoAnalyses(): RegionAnalysis[] {
   return regions.map(({ id }) => enumerateRegion(demoSimulation(id)));
 }
-

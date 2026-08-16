@@ -1,40 +1,24 @@
 @import "tailwindcss";
 
-:root {
-  --vct-background: #090b10;
-  --vct-surface: #11151d;
-  --vct-surface-raised: #181e29;
-  --vct-border: rgba(255, 255, 255, 0.1);
-  --vct-text-muted: #9aa5b5;
-  --vct-accent: #ff4655;
-}
-
 * {
   box-sizing: border-box;
 }
 
 html {
-  background: var(--vct-background);
+  background: #f5f7fb;
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  background:
-    radial-gradient(circle at 85% -15%, rgba(255, 70, 85, 0.14), transparent 30rem),
-    var(--vct-background);
-  color: #f4f6f8;
-  font-family: Arial, Helvetica, sans-serif;
+  background: #f5f7fb;
+  color: #17202a;
+  font-family: Roboto, Arial, Helvetica, sans-serif;
 }
 
 a {
   color: inherit;
   text-decoration: none;
-}
-
-.vct-grid {
-  background-image: linear-gradient(var(--vct-border) 1px, transparent 1px), linear-gradient(90deg, var(--vct-border) 1px, transparent 1px);
-  background-size: 48px 48px;
 }
 
 .chart-surface {
@@ -52,7 +36,7 @@ a {
 
 .chart-data-table th,
 .chart-data-table td {
-  border-bottom: 1px solid var(--vct-border);
+  border-bottom: 1px solid #e2e8f0;
   padding: 0.45rem 0.5rem;
   text-align: left;
 }
