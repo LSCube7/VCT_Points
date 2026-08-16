@@ -49,12 +49,12 @@ export async function GET(request: Request) {
   } catch (error) {
     unstable_rethrow(error);
     const classified = classifyLoginError(stage, error);
-    console.error("[auth.login]", {
+    console.error("[auth.login] " + JSON.stringify({
       stage,
       code: classified.code,
       errorName: error instanceof Error ? error.name : "UnknownError",
       errorMessage: error instanceof Error ? redactErrorMessage(error.message) : "Unknown error",
-    });
+    }));
     return NextResponse.json({ ok: false, code: classified.code, message: classified.message }, { status: classified.status });
   }
 }
