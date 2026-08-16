@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import { unstable_rethrow } from "next/navigation";
 import { NextResponse } from "next/server";
 import { authorizationCodeGrant } from "openid-client";
 import {
@@ -99,6 +100,7 @@ export async function GET(request: Request) {
     response.cookies.delete(OIDC_TRANSACTION_COOKIE);
     return response;
   } catch (error) {
+    unstable_rethrow(error);
     const classified = classifyCallbackError(stage, error);
     console.error("[auth.callback]", {
       stage,
