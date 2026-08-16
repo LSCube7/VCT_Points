@@ -4,7 +4,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import { cookies } from "next/headers";
 import { eq } from "drizzle-orm";
 import {
-  ClientSecretBasic,
+  ClientSecretPost,
   calculatePKCECodeChallenge,
   customFetch,
   discovery,
@@ -98,8 +98,8 @@ export async function getOidcConfiguration(redirectUri: string): Promise<Configu
   const configuration = await discovery(
     new URL(issuer),
     clientId,
-    { redirect_uris: [redirectUri], response_types: ["code"], token_endpoint_auth_method: "client_secret_basic" },
-    ClientSecretBasic(clientSecret),
+    { redirect_uris: [redirectUri], response_types: ["code"], token_endpoint_auth_method: "client_secret_post" },
+    ClientSecretPost(clientSecret),
   );
   if (process.env.NODE_ENV !== "production") configuration[customFetch] = createDevelopmentOidcFetch(clientId);
   return configuration;
