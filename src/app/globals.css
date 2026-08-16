@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+:root {
+  --vct-background: #090b10;
+  --vct-surface: #11151d;
+  --vct-surface-raised: #181e29;
+  --vct-border: rgba(255, 255, 255, 0.1);
+  --vct-text-muted: #9aa5b5;
+  --vct-accent: #ff4655;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--vct-background);
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 85% -15%, rgba(255, 70, 85, 0.14), transparent 30rem),
+    var(--vct-background);
+  color: #f4f6f8;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.vct-grid {
+  background-image: linear-gradient(var(--vct-border) 1px, transparent 1px), linear-gradient(90deg, var(--vct-border) 1px, transparent 1px);
+  background-size: 48px 48px;
+}
+
+.chart-surface {
+  min-height: 280px;
+  width: 100%;
+}
+
+.chart-data-table {
+  width: 100%;
+  margin-top: 0.75rem;
+  border-collapse: collapse;
+  color: #dfe5ed;
+  font-size: 0.875rem;
+}
+
+.chart-data-table th,
+.chart-data-table td {
+  border-bottom: 1px solid var(--vct-border);
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
