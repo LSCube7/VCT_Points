@@ -2,8 +2,8 @@
 
 import { createHash } from "node:crypto";
 import { eq, desc } from "drizzle-orm";
-import { auditLogs, draftVersions } from "../../../../db/schema";
-import { getDb } from "@/lib/db";
+import { draftVersions } from "../../../../db/schema";
+import { getDb, getSql } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { draftPayloadSchema, validateMatchResult } from "@/lib/validation";
 import type { DraftPayload } from "@/lib/types";
@@ -89,23 +89,11 @@ export async function saveDraft(payload: unknown): Promise<AdminActionResult> {
     const storedPayload = { ...parsed.data, revision };
     const serialized = stableJson(storedPayload);
     const inputHash = createHash("sha256").update(serialized).digest("hex");
-    await db.transaction(async (tx) => {
-      await tx.insert(draftVersions).values({
-        seasonId: parsed.data.seasonId,
-        revision,
-        status: "draft",
-        payload: storedPayload,
-        inputHash,
-        updatedBy: session.email,
-      });
-      await tx.insert(auditLogs).values({
-        actor: session.email,
-        action: "draft.save",
-        entityType: "draft",
-        entityId: parsed.data.seasonId,
-        details: { revision, inputHash },
-      });
-    });
+    const sql = getSql();
+    await sql.transaction((tx) => [
+      tx`insert into "draft_versions" ("season_id", "revision", "status", "payload", "input_hash", "updated_by") values (${parsed.data.seasonId}, ${revision}, ${"draft"}, ${JSON.stringify(storedPayload)}::jsonb, ${inputHash}, ${session.email})`,
+      tx`insert into "audit_logs" ("actor", "action", "entity_type", "entity_id", "details") values (${session.email}, ${"draft.save"}, ${"draft"}, ${parsed.data.seasonId}, ${JSON.stringify({ revision, inputHash })}::jsonb)`,
+    ]);
     return { ok: true, revision };
   } catch (error) {
     const message = error instanceof Error ? error.message : "草稿保存失败";

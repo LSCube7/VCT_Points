@@ -2,8 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { updateTag } from "next/cache";
-import { publishedVersions } from "../../db/schema";
-import { getDb } from "./db";
+import { getSql } from "./db";
 import { requireAdmin } from "./auth";
 import { z } from "zod";
 import type { PublishedSnapshot } from "./types";
@@ -69,20 +68,13 @@ export async function publishSnapshot(snapshotInput: unknown, inputHash: string)
   if (massError) return { ok: false, code: "VALIDATION_ERROR", message: massError };
   try {
     const session = await requireAdmin();
-    const db = getDb();
     const version = `vct-2026-${Date.now()}`;
     const engineVersion = snapshot.regions[0]?.engineVersion ?? "unknown";
-    await db.transaction(async (tx) => {
-      await tx.insert(publishedVersions).values({
-        seasonId: "vct-2026",
-        version,
-        snapshot,
-        inputHash: createHash("sha256").update(inputHash).digest("hex"),
-        engineVersion,
-        publishedBy: session.email,
-        dataCutoff: new Date(snapshot.dataCutoff),
-      });
-    });
+    const sql = getSql();
+    const publishedInputHash = createHash("sha256").update(inputHash).digest("hex");
+    await sql.transaction((tx) => [
+      tx`insert into "published_versions" ("season_id", "version", "snapshot", "input_hash", "engine_version", "published_by", "data_cutoff") values (${"vct-2026"}, ${version}, ${JSON.stringify(snapshot)}::jsonb, ${publishedInputHash}, ${engineVersion}, ${session.email}, ${new Date(snapshot.dataCutoff)})`,
+    ]);
     updateTag("season-2026-published");
     for (const region of snapshot.regions) updateTag(`season-2026-${region.region}`);
     return { ok: true, version };
@@ -93,4 +85,3 @@ export async function publishSnapshot(snapshotInput: unknown, inputHash: string)
     return { ok: false, code: "PUBLISH_FAILED", message: "发布失败，上一完整版本保持不变" };
   }
 }
-
