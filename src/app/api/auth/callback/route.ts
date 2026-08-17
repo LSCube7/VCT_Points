@@ -22,6 +22,8 @@ const stageCodes: Record<Exclude<CallbackStage, "transaction" | "claims" | "auth
 
 function redactErrorMessage(message: string): string {
   return message
+    .replace(/\bparams:\s*[\s\S]*$/i, "params: [redacted]")
+    .replace(/\b(detail|context|hint):\s*[\s\S]*$/i, "$1: [redacted]")
     .replace(/([?&\s](?:code|access_token|id_token|client_secret|code_verifier|state|nonce)=)[^&\s]*/gi, "$1[redacted]")
     .slice(0, 240);
 }
@@ -30,6 +32,31 @@ function getErrorField(error: unknown, field: string): string | undefined {
   if (typeof error !== "object" || error === null) return undefined;
   const value = (error as Record<string, unknown>)[field];
   return typeof value === "string" ? value : undefined;
+}
+
+function getNestedErrorField(error: unknown, field: string): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const value = getErrorField(current, field);
+    if (value) return value;
+    if (typeof current !== "object" || current === null) return undefined;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function getNestedErrorMessage(error: unknown): string {
+  let current: unknown = error;
+  let fallback = "";
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current instanceof Error && current.message) {
+      fallback ||= current.message;
+      if (getErrorField(current, "code")) return current.message;
+    }
+    if (typeof current !== "object" || current === null) return fallback;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return fallback;
 }
 
 function classifyCallbackError(stage: CallbackStage, error: unknown): { code: string; status: number; message: string } {
@@ -52,6 +79,20 @@ function classifyCallbackError(stage: CallbackStage, error: unknown): { code: st
   }
   if (rawMessage === "DATABASE_NOT_CONFIGURED") {
     return { code: "DATABASE_NOT_CONFIGURED", status: 503, message: "服务端数据库尚未连接，请联系管理员" };
+  }
+
+  if (stage === "session") {
+    const databaseCode = getNestedErrorField(error, "code");
+    const databaseMessage = getNestedErrorMessage(error);
+    if (databaseCode === "42P01" || /relation [\"']?admin_sessions[\"']? does not exist/i.test(databaseMessage)) {
+      return { code: "SESSION_SCHEMA_MISSING", status: 503, message: "数据库会话表尚未完成迁移，请先执行数据库迁移" };
+    }
+    if (databaseCode === "42501" || /permission denied for table admin_sessions/i.test(databaseMessage)) {
+      return { code: "SESSION_SCHEMA_FORBIDDEN", status: 503, message: "数据库账号没有会话表写入权限，请检查 Neon 数据库权限" };
+    }
+    if (/fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket|timeout/i.test(databaseMessage)) {
+      return { code: "DATABASE_UNAVAILABLE", status: 503, message: "数据库暂时无法连接，请稍后重试" };
+    }
   }
 
   if (stage === "token_exchange") {
@@ -81,6 +122,9 @@ function classifyCallbackError(stage: CallbackStage, error: unknown): { code: st
     OIDC_TOKEN_EXCHANGE_FAILED: "登录授权码兑换失败，请检查回调地址和客户端配置",
     OIDC_USERINFO_FAILED: "无法读取登录账号信息，请检查登录服务配置",
     SESSION_PERSIST_FAILED: "登录成功但无法保存会话，请检查数据库配置",
+    SESSION_SCHEMA_MISSING: "数据库会话表尚未完成迁移，请先执行数据库迁移",
+    SESSION_SCHEMA_FORBIDDEN: "数据库账号没有会话表写入权限，请检查 Neon 数据库权限",
+    DATABASE_UNAVAILABLE: "数据库暂时无法连接，请稍后重试",
     AUTH_CALLBACK_FAILED: "登录回调失败，请重试",
   };
   return { code, status: 400, message: messageByCode[code] };
@@ -141,6 +185,8 @@ export async function GET(request: Request) {
       oauthStatus: getErrorField(error, "status"),
       oauthDescription: redactErrorMessage(getErrorField(error, "error_description") ?? ""),
       errorMessage: error instanceof Error ? redactErrorMessage(error.message) : "Unknown error",
+      databaseCode: stage === "session" ? getNestedErrorField(error, "code") : undefined,
+      databaseMessage: stage === "session" ? redactErrorMessage(getNestedErrorMessage(error)) : undefined,
     }));
     return NextResponse.json({ ok: false, code: classified.code, message: classified.message }, { status: classified.status });
   }
