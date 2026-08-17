@@ -49,6 +49,7 @@ import { allDemoTeams, demoSimulation } from "@/lib/data/demo";
 import { runRegionWorker } from "@/lib/engine/worker-client";
 import { getMessages } from "@/lib/i18n/messages";
 import { createFullSchedule, EVENT_TEMPLATES, eventTemplate, MAP_POOL } from "@/lib/schedule";
+import { inspectKickoffScheduleMigration, migrateKickoffSchedule, type KickoffScheduleMigrationPreview } from "@/lib/schedule-migration";
 import type { RegionAnalysis } from "@/lib/types";
 import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
 import { saveDraft, validateDraft } from "@/app/[locale]/admin/actions";
@@ -336,7 +337,7 @@ function BracketBoard({ matches, teams, onChange }: { matches: MatchResult[]; te
   return <Stack spacing={2}><FirstRoundConfiguration matches={matches} teams={[...teams.values()]} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{bracketRoundLabel(round)}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
 }
 
-function TripleEliminationConfiguration({ config, teams, matches, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; onOpenMatches?: () => void }) {
+function TripleEliminationConfiguration({ config, teams, matches, migration, onMigrate, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onMigrate?: () => void; onOpenMatches?: () => void }) {
   const eligibleTeams = teams.filter((team) => config.scope === "international" || config.id.endsWith(team.region));
   const configuredRefs = config.bracket?.teamRefs ?? [];
   const teamRefs = [...new Set([...configuredRefs, ...eligibleTeams.map((team) => team.id)])].slice(0, 12);
@@ -344,6 +345,7 @@ function TripleEliminationConfiguration({ config, teams, matches, onOpenMatches 
   const region = eligibleTeams[0]?.region;
   const currentBracketMatches = matches.filter((match) => match.eventId === config.eventId && match.region === region && match.phase === "playoffs");
   const hasLegacySchedule = currentBracketMatches.length > 0 && (currentBracketMatches.length !== 30 || !currentBracketMatches.some((match) => match.bracketRound === "Middle Bracket Round 1"));
+  const isLegacyRegion = region ? migration.legacyRegions.includes(region) : false;
   const sections = [
     { title: "胜者组", detail: "4 场首轮 · 4 场第二轮 · 2 场第三轮 · 1 场决赛", note: "前四种子从第二轮进入" },
     { title: "中间败者组", detail: "4 场第一轮 · 2 场第二轮 · 2 场第三轮 · 1 场第四轮 · 1 场决赛", note: "胜者组首次失利后进入" },
@@ -352,6 +354,7 @@ function TripleEliminationConfiguration({ config, teams, matches, onOpenMatches 
   return <Stack spacing={2}>
     <Alert severity="info" icon={<Settings />}>Kickoff 的赛制结构固定为 12 队三败淘汰。这里展示轮次和种子入口；实际首轮双方请到“赛果录入 → 淘汰赛图”中配置，避免配置页和已录入赛果互相覆盖。</Alert>
     {hasLegacySchedule && <Alert severity="warning">当前草稿仍载入旧版 Kickoff 对阵图（检测到 {currentBracketMatches.length} 场淘汰赛）。本页不会自动覆盖旧赛果；请先确认迁移后，再在赛果录入页使用新版胜者组 / 中间败者组 / 败者组结构。</Alert>}
+    {isLegacyRegion && migration.blockedRegions.length > 0 && <Alert severity="error">检测到旧版后续轮次已有赛果，自动迁移已阻止（受影响赛区：{migration.blockedRegions.join("、")}）。请先保留原草稿，并手动将这些结果按新版对阵重新录入。</Alert>}
     <Grid container spacing={2}>{sections.map((section) => <Grid key={section.title} size={{ xs: 12, md: 4 }}><Card variant="outlined" sx={{ height: "100%" }}><CardContent><Typography variant="subtitle1" fontWeight={700}>{section.title}</Typography><Typography variant="body2" sx={{ mt: 1 }}>{section.detail}</Typography><Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>{section.note}</Typography></CardContent></Card></Grid>)}</Grid>
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Typography variant="subtitle1" fontWeight={700}>种子入口</Typography>
@@ -361,11 +364,14 @@ function TripleEliminationConfiguration({ config, teams, matches, onOpenMatches 
         <Box><Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>胜者组第 1 轮 · 首轮队伍</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{teamRefs.slice(4, 12).map((teamId) => <Chip key={teamId} size="small" variant="outlined" label={displayParticipant(teamId, teamById)} />)}</Stack></Box>
       </Stack>
     </Paper>
-    {onOpenMatches && <Button variant="outlined" startIcon={<PlayArrow />} onClick={onOpenMatches} sx={{ alignSelf: "flex-start" }}>去赛果录入配置首轮对阵</Button>}
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+      {isLegacyRegion && migration.canMigrate && onMigrate && <Button variant="contained" color="warning" startIcon={<Settings />} onClick={onMigrate}>迁移全部旧版 Kickoff 赛程</Button>}
+      {onOpenMatches && <Button variant="outlined" startIcon={<PlayArrow />} onClick={onOpenMatches}>去赛果录入配置首轮对阵</Button>}
+    </Stack>
   </Stack>;
 }
 
-function ScheduleConfiguration({ config, teams, matches, onChange, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; onChange: (config: TournamentConfig) => void; onOpenMatches?: () => void }) {
+function ScheduleConfiguration({ config, teams, matches, migration, onMigrate, onChange, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onMigrate?: () => void; onChange: (config: TournamentConfig) => void; onOpenMatches?: () => void }) {
   const isTripleElimination = config.format === "triple-elimination";
   const eligibleTeams = config.scope === "international" ? teams : teams.filter((team) => config.id.endsWith(team.region));
   const groups = config.groupStage?.groups ?? [];
@@ -381,7 +387,7 @@ function ScheduleConfiguration({ config, teams, matches, onChange, onOpenMatches
   }
   return <Stack spacing={2}>
     <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}><Box sx={{ flex: 1 }}><Typography variant="h6">{config.name}</Typography><Typography variant="body2" color="text.secondary">{isTripleElimination ? "赛区赛事：12 队三败淘汰，胜者组 / 中间败者组 / 败者组固定衔接" : config.scope === "international" ? "全球赛事：四赛区各 3 队，8 队 Swiss 晋级 8 队淘汰赛" : "赛区赛事：可视化配置小组分组与淘汰赛入口"}</Typography></Box><FormControl size="small" sx={{ minWidth: 190 }} disabled><InputLabel id={`${config.id}-format-label`}>赛事格式</InputLabel><Select labelId={`${config.id}-format-label`} label="赛事格式" value={config.format}><MenuItem value="triple-elimination">三败淘汰</MenuItem><MenuItem value="group-plus-playoffs">小组赛 + 淘汰赛</MenuItem><MenuItem value="swiss-plus-playoffs">Swiss + 淘汰赛</MenuItem></Select></FormControl>{isTripleElimination ? <TextField size="small" sx={{ minWidth: 260 }} label="淘汰赛起始" value="固定：胜者组第 1 轮（前四种子第 2 轮进入）" disabled /> : <FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id={`${config.id}-start-label`}>淘汰赛起始</InputLabel><Select labelId={`${config.id}-start-label`} label="淘汰赛起始" value={config.bracket?.startRound ?? "quarterfinals"} onChange={(event) => onChange({ ...config, bracket: { type: config.bracket?.type ?? "double-elimination", teamRefs: config.bracket?.teamRefs ?? [], startRound: event.target.value as "quarterfinals" | "semifinals" } })}><MenuItem value="quarterfinals">四分之一决赛</MenuItem><MenuItem value="semifinals">半决赛</MenuItem></Select></FormControl>}</Stack>
-    {isTripleElimination ? <TripleEliminationConfiguration config={config} teams={teams} matches={matches} onOpenMatches={onOpenMatches} /> : <>
+    {isTripleElimination ? <TripleEliminationConfiguration config={config} teams={teams} matches={matches} migration={migration} onMigrate={onMigrate} onOpenMatches={onOpenMatches} /> : <>
       <Divider />
       <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1">小组 / Swiss 分组</Typography><Typography variant="body2" color="text.secondary">当前使用多选框保存队伍归属；不会覆盖已经录入的比赛结果。</Typography></Box><Button startIcon={<Add />} onClick={addGroup}>新增分组</Button></Stack>
       <Grid container spacing={2}>{groups.map((group) => <Grid key={group.id} size={{ xs: 12, md: 6 }}><Paper variant="outlined" sx={{ p: 2 }}><Stack direction="row" spacing={1} alignItems="center" mb={1.5}><TextField size="small" label="分组名称" value={group.name} onChange={(event) => updateGroup(group.id, { name: event.target.value })} sx={{ flex: 1 }} /><IconButton aria-label={`删除${group.name}`} size="small" onClick={() => removeGroup(group.id)} disabled={groups.length <= 1}><DeleteOutline /></IconButton></Stack><FormControl fullWidth size="small"><InputLabel id={`${config.id}-${group.id}-teams-label`}>队伍</InputLabel><Select multiple labelId={`${config.id}-${group.id}-teams-label`} label="队伍" value={group.teamIds} onChange={(event) => updateGroup(group.id, { teamIds: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value as string[] })} renderValue={(selected) => <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(selected as string[]).map((teamId) => <Chip key={teamId} size="small" label={displayParticipant(teamId, new Map(teams.map((team) => [team.id, team])))} />)}</Stack>}>{eligibleTeams.map((team) => <MenuItem key={team.id} value={team.id}>{team.name}</MenuItem>)}</Select></FormControl></Paper></Grid>)}</Grid>
@@ -424,6 +430,7 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
   const [isPending, startTransition] = useTransition();
   const teamById = useMemo(() => new Map(teams.map((team) => [team.id, team])), [teams]);
   const payload = useMemo<DraftPayload>(() => ({ seasonId: "vct-2026", revision, matches, teams, tournaments }), [matches, revision, teams, tournaments]);
+  const kickoffMigration = useMemo(() => inspectKickoffScheduleMigration(matches), [matches]);
   const changeTokenRef = useRef(0);
   const saveInFlightRef = useRef(false);
   const visibleMatches = useMemo(() => matches.filter((match) => (match.region === "global" || match.region === region) && (eventFilter === "all" || match.eventId === eventFilter) && (phaseFilter === "all" || match.phase === phaseFilter)), [eventFilter, matches, phaseFilter, region]);
@@ -473,6 +480,24 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     setTeams(nextTeams);
     markDraftChanged();
   }
+  function migrateKickoff() {
+    try {
+      const migrated = migrateKickoffSchedule({ matches, teams, tournaments });
+      if (migrated.migratedRegions.length === 0) {
+        setMessage({ severity: "info", text: "当前草稿已经是新版 Kickoff 赛程，无需迁移。" });
+        return;
+      }
+      setMatches(migrated.matches);
+      setTournaments(migrated.tournaments);
+      markDraftChanged();
+      setMessage({ severity: "success", text: `已迁移 ${migrated.migratedRegions.map((region) => regionLabels[region]).join("、")} 的 Kickoff 赛程。请确认首轮对阵后点击“保存草稿”。` });
+    } catch (error) {
+      const blockedRegions = error instanceof Error && error.message.startsWith("KICKOFF_MIGRATION_HAS_RESULTS:")
+        ? error.message.slice("KICKOFF_MIGRATION_HAS_RESULTS:".length).split(",").map((region) => regionLabels[region as RegionId] ?? region).join("、")
+        : "部分赛区";
+      setMessage({ severity: "error", text: `无法自动迁移 ${blockedRegions} 的旧版 Kickoff 赛程；旧版后续轮次已有赛果，请保留原草稿并手动按新版对阵录入。` });
+    }
+  }
   function runAction(action: "validate" | "save") {
     if (action === "save") {
       saveDraftNow(payload);
@@ -498,7 +523,7 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2} mb={2}><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><FormControl size="small" sx={{ minWidth: 130 }}><InputLabel id="admin-region-label">赛区</InputLabel><Select labelId="admin-region-label" label="赛区" value={region} onChange={(event) => setRegion(event.target.value as RegionId)}>{(["amer", "emea", "pacific", "china"] as RegionId[]).map((item) => <MenuItem key={item} value={item}>{regionLabels[item]}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 210 }}><InputLabel id="admin-event-label">赛事</InputLabel><Select labelId="admin-event-label" label="赛事" value={eventFilter} onChange={(event) => { setEventFilter(event.target.value); setPhaseFilter("all"); }}><MenuItem value="all">全年赛事</MenuItem>{EVENT_TEMPLATES.map((event) => <MenuItem key={event.id} value={event.id}>{event.label}{event.scope === "international" ? " · 全球" : " · 赛区"}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="admin-phase-label">阶段</InputLabel><Select labelId="admin-phase-label" label="阶段" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value as typeof phaseFilter)}><MenuItem value="all">全部阶段</MenuItem><MenuItem value="group">小组赛列表</MenuItem><MenuItem value="swiss">Swiss 列表</MenuItem><MenuItem value="playoffs">淘汰赛图</MenuItem></Select></FormControl></Stack><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button variant="outlined" startIcon={<Check />} onClick={() => runAction("validate")} disabled={isPending}>{copy.validate}</Button><Button variant="contained" startIcon={<Save />} onClick={() => runAction("save")} disabled={isPending}>{copy.saveDraft}</Button></Stack></Stack>
       <Tabs value={tab} onChange={(_, value: AdminTab) => setTab(value)} aria-label="赛事管理标签" sx={{ mb: 3 }}><Tab value="matches" label="赛果录入" icon={<Check />} iconPosition="start" /><Tab value="schedule" label="赛程配置" icon={<Groups />} iconPosition="start" /><Tab value="teams" label="队伍配置" icon={<ImageIcon />} iconPosition="start" /></Tabs>
       {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛和 Swiss 使用列表输入；淘汰赛使用对阵图输入。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。草稿允许保留未完成赛果，请点击“保存草稿”手动保存。</Alert>{phaseFilter === "playoffs" || (bracketMatches.length > 0 && listMatches.length === 0) ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} teams={teamById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛 / Swiss 列表</Typography><GroupMatchList matches={listMatches} teams={teamById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} teams={teamById} onChange={updateMatch} /></> : <GroupMatchList matches={listMatches.length > 0 ? listMatches : visibleMatches} teams={teamById} onChange={updateMatch} />}</Stack>}
-      {tab === "schedule" && <Stack spacing={2}><Alert severity="info">Masters Santiago 和 Masters London 按 2026 赛制建模为 12 队全球赛事：四赛区各 3 队，8 队 Swiss，前 4 晋级 8 队双败淘汰。分组配置在这里维护；实际对阵和赛果在“赛果录入”页维护。</Alert>{selectedConfig ? <ScheduleConfiguration config={selectedConfig} teams={teams} matches={matches} onChange={updateTournament} onOpenMatches={() => { setEventFilter(selectedConfig.eventId); setPhaseFilter("playoffs"); setTab("matches"); }} /> : <Typography color="text.secondary">请选择赛事配置。</Typography>}</Stack>}
+      {tab === "schedule" && <Stack spacing={2}><Alert severity="info">Masters Santiago 和 Masters London 按 2026 赛制建模为 12 队全球赛事：四赛区各 3 队，8 队 Swiss，前 4 晋级 8 队双败淘汰。分组配置在这里维护；实际对阵和赛果在“赛果录入”页维护。</Alert>{selectedConfig ? <ScheduleConfiguration config={selectedConfig} teams={teams} matches={matches} migration={kickoffMigration} onMigrate={migrateKickoff} onChange={updateTournament} onOpenMatches={() => { setEventFilter(selectedConfig.eventId); setPhaseFilter("playoffs"); setTab("matches"); }} /> : <Typography color="text.secondary">请选择赛事配置。</Typography>}</Stack>}
       {tab === "teams" && <TeamConfiguration teams={teams} onChange={updateTeams} />}
     </CardContent></Card>
     <Stack direction={{ xs: "column", md: "row" }} spacing={2} mt={3}><Card sx={{ flex: 1 }}><CardContent><Stack direction="row" spacing={1} alignItems="center"><PlayArrow color="primary" /><Typography variant="h6">精确计算</Typography></Stack><Typography variant="body2" color="text.secondary" mt={1}>校验通过后，浏览器 Web Worker 会对当前赛区未完成系列赛进行等可能枚举。</Typography><Button sx={{ mt: 2 }} variant="contained" startIcon={<PlayArrow />} onClick={runCalculation} disabled={analysisState === "running"}>{analysisState === "running" ? "计算中…" : "启动预览计算"}</Button>{analysisState === "error" && <Alert severity="error" sx={{ mt: 2 }}>Worker 计算失败，请刷新后重试。</Alert>}{analysis && <Typography variant="body2" color="text.secondary" mt={2}>完成：{analysis.scenarioGroups.length} 个精确情景，{analysis.totalOutcomes} 个等可能结果。</Typography>}</CardContent></Card><Card sx={{ flex: 1 }}><CardContent><Typography variant="h6">草稿状态</Typography><Typography variant="body2" color="text.secondary" mt={1}>revision {revision} · {teams.filter((team) => team.active).length} 支启用队伍 · {tournaments.length} 个赛事配置</Typography><Stack direction="row" spacing={1} mt={2}><Chip size="small" label={tab === "matches" ? "正在录入赛果" : tab === "schedule" ? "正在配置赛程" : "正在维护队伍"} /><Chip size="small" label={draftStatus === "clean" ? "就绪" : draftStatus === "dirty" ? "有未保存修改" : draftStatus === "saving" ? "保存中" : draftStatus === "saved" ? "已保存" : draftStatus === "conflict" ? "版本冲突" : "保存失败"} color={draftStatus === "saving" ? "warning" : draftStatus === "error" || draftStatus === "conflict" ? "error" : draftStatus === "dirty" ? "warning" : draftStatus === "saved" ? "success" : "default"} /></Stack></CardContent></Card></Stack>
