@@ -12,6 +12,7 @@ import type {
   TournamentScope,
 } from "./types";
 import { REGION_IDS } from "./types";
+import { calculateMastersAllocations, mastersDirectParticipantIds, mastersSwissParticipantIds } from "./masters";
 
 export const MAP_POOL = [
   "Abyss",
@@ -109,11 +110,13 @@ export function tournamentRegion(config: Pick<TournamentConfig, "id" | "eventId"
 
 export function createTournamentConfig(template: EventTemplate, teams: Team[], region?: RegionId): TournamentConfig {
   const scope = template.scope;
+  const mastersDirectSeeds = template.format === "swiss-plus-playoffs" ? mastersDirectParticipantIds(teams) : [];
+  const mastersSwissParticipants = template.format === "swiss-plus-playoffs" ? mastersSwissParticipantIds(teams) : [];
   const teamIds = scope === "international"
     ? teams.filter((team) => team.id.endsWith("-team-1") || team.id.endsWith("-team-2") || team.id.endsWith("-team-3")).map((team) => team.id)
     : teams.filter((team) => team.region === region).map((team) => team.id);
   const groups = template.format === "swiss-plus-playoffs"
-    ? [{ id: "swiss", name: "Swiss Stage", teamIds: teamIds.filter((teamId) => !teamId.endsWith("-team-1")) }]
+    ? [{ id: "swiss", name: "Swiss Stage", teamIds: mastersSwissParticipants }]
     : groupConfigs(teamIds);
   return {
     id: `${template.id}-${scope === "international" ? "global" : region ?? "regional"}`,
@@ -124,7 +127,7 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
     groupStage: { groups, bestOf: template.defaultBestOf },
     bracket: {
       ...bracketConfig(template.format === "triple-elimination" ? "triple-elimination" : "double-elimination", template.format === "swiss-plus-playoffs" ? [
-        ...teams.filter((team) => team.id.endsWith("-team-1")).map((team) => `seed:${team.id}`),
+        ...mastersDirectSeeds.map((teamId) => `seed:${teamId}`),
         ...Array.from({ length: 4 }, (_, index) => `winner:${template.id}-swiss-${index + 1}`),
       ] : template.format === "triple-elimination" ? tripleSeedSlots() : teamIds.slice(0, 8)),
     },
@@ -401,7 +404,7 @@ export function applyTripleEliminationSeedOrder(matches: MatchResult[], config: 
 }
 
 function internationalSwissMatches(event: EventTemplate, teams: Team[]): MatchResult[] {
-  const byRegion = new Map<RegionId, string[]>((["amer", "emea", "pacific", "china"] as RegionId[]).map((region) => [region, teams.filter((team) => team.region === region).slice(0, 3).map((team) => team.id)]));
+  const byRegion = new Map(calculateMastersAllocations(teams).map((allocation) => [allocation.region, allocation.teamIds]));
   const seeds = [
     [byRegion.get("amer")?.[1], byRegion.get("emea")?.[2]],
     [byRegion.get("emea")?.[1], byRegion.get("pacific")?.[2]],
@@ -424,7 +427,7 @@ function internationalSwissMatches(event: EventTemplate, teams: Team[]): MatchRe
 }
 
 function internationalPlayoffMatches(event: EventTemplate, teams: Team[]): MatchResult[] {
-  const directSeeds = teams.filter((team) => team.id.endsWith("-team-1")).map((team) => `seed:${team.id}`);
+  const directSeeds = mastersDirectParticipantIds(teams).map((teamId) => `seed:${teamId}`);
   const swissSeeds = Array.from({ length: 4 }, (_, index) => `winner:${event.id}-swiss-r3-qualifier-${index + 1}`);
   const bracketSlots = [...directSeeds, ...swissSeeds];
   const matches: MatchResult[] = [];
