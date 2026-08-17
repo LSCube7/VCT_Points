@@ -1,5 +1,6 @@
 import type {
   BracketConfig,
+  DraftPayload,
   GroupConfig,
   MatchPhase,
   MatchRegion,
@@ -56,6 +57,38 @@ function bracketConfig(type: BracketConfig["type"], teamRefs: string[]): Bracket
 
 function tripleSeedSlots(teamRefs: string[] = []): string[] {
   return Array.from({ length: 12 }, (_, index) => teamRefs[index] || `seed:${index + 1}`);
+}
+
+function inferMatchPhase(match: MatchResult): MatchPhase {
+  if (match.phase) return match.phase;
+  if (match.bracketRound) return "playoffs";
+  if (match.groupId || match.isRegularSeason) return "group";
+  return match.region === "global" ? "swiss" : "group";
+}
+
+/**
+ * Keep older drafts usable after schedule metadata was added. Missing phase
+ * metadata is inferred, and a draft that predates Kickoff records receives
+ * only the missing generated Kickoff records/configuration.
+ */
+export function hydrateDraftSchedule(
+  generated: Pick<DraftPayload, "matches" | "tournaments">,
+  draft?: Pick<DraftPayload, "matches" | "tournaments">,
+): Pick<DraftPayload, "matches" | "tournaments"> {
+  const draftMatches = draft?.matches?.length
+    ? draft.matches.map((match) => match.phase ? match : { ...match, phase: inferMatchPhase(match) })
+    : generated.matches;
+  const matches = draftMatches.some((match) => match.eventId === "kickoff")
+    ? draftMatches
+    : [...draftMatches, ...generated.matches.filter((match) => match.eventId === "kickoff")];
+
+  const draftById = new Map((draft?.tournaments ?? []).map((tournament) => [tournament.id, tournament]));
+  const generatedIds = new Set(generated.tournaments.map((tournament) => tournament.id));
+  const tournaments = [
+    ...generated.tournaments.map((tournament) => draftById.get(tournament.id) ?? tournament),
+    ...(draft?.tournaments ?? []).filter((tournament) => !generatedIds.has(tournament.id)),
+  ];
+  return { matches, tournaments };
 }
 
 /**

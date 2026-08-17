@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allDemoTeams } from "../src/lib/data/demo";
-import { applyTripleEliminationSeedOrder, createFullSchedule } from "../src/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule, hydrateDraftSchedule } from "../src/lib/schedule";
 import { validateMatchResult } from "../src/lib/validation";
 
 describe("2026 schedule templates", () => {
@@ -110,6 +110,19 @@ describe("2026 schedule templates", () => {
     const updated = applyTripleEliminationSeedOrder(schedule.matches, configured);
     expect(updated.find((match) => match.id === "amer-kickoff-ub-r1-3")?.teamA).toBe("amer-team-4");
     expect(updated.find((match) => match.id === "amer-kickoff-ub-r1-3")?.teamB).toBe("amer-team-3");
+  });
+
+  it("hydrates partial drafts so Kickoff remains visible", () => {
+    const generated = createFullSchedule(allDemoTeams());
+    const partialMatches = generated.matches
+      .filter((match) => match.eventId !== "kickoff")
+      .map(({ phase, ...match }) => match);
+    const partialTournaments = generated.tournaments.filter((tournament) => tournament.eventId !== "kickoff");
+    const hydrated = hydrateDraftSchedule(generated, { matches: partialMatches, tournaments: partialTournaments });
+    expect(hydrated.matches.filter((match) => match.eventId === "kickoff")).toHaveLength(120);
+    expect(hydrated.matches.find((match) => match.id === "amer-stage-1-alpha-1-2")?.phase).toBe("group");
+    expect(hydrated.matches.find((match) => match.id === "amer-kickoff-ub-r1-3")?.phase).toBe("playoffs");
+    expect(hydrated.tournaments.some((tournament) => tournament.id === "kickoff-amer")).toBe(true);
   });
 });
 
