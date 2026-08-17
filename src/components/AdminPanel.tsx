@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import {
   Add,
   Check,
@@ -50,7 +50,7 @@ import { runRegionWorker } from "@/lib/engine/worker-client";
 import { getMessages } from "@/lib/i18n/messages";
 import { createFullSchedule, EVENT_TEMPLATES, eventTemplate, MAP_POOL } from "@/lib/schedule";
 import type { RegionAnalysis } from "@/lib/types";
-import type { GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
+import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
 import { saveDraft, validateDraft } from "@/app/[locale]/admin/actions";
 
 type AdminTab = "matches" | "schedule" | "teams";
@@ -69,6 +69,41 @@ function displayParticipant(ref: string, teams: Map<string, Team>): string {
   if (ref.startsWith("loser:")) return `败者 · ${ref.slice("loser:".length)}`;
   if (ref.startsWith("seed:")) return `种子 · ${ref.slice("seed:".length)}`;
   return ref;
+}
+
+const bracketRoundOrder = [
+  "Opening Round",
+  "Upper Bracket Quarterfinal",
+  "Quarterfinal",
+  "Upper Bracket Semifinal",
+  "Semifinal",
+  "Lower Bracket Round 1",
+  "Lower Bracket Round 2",
+  "Upper Bracket Final",
+  "Lower Bracket Semifinal",
+  "Lower Bracket Final",
+  "Grand Final",
+  "Final",
+];
+
+function bracketRoundRank(round: string): number {
+  const index = bracketRoundOrder.findIndex((label) => round === label);
+  return index < 0 ? bracketRoundOrder.length : index;
+}
+
+function firstRoundMatches(matches: MatchResult[]): MatchResult[] {
+  const playoffMatches = matches.filter((match) => match.phase === "playoffs");
+  const matchesByEvent = new Map<string, MatchResult[]>();
+  for (const match of playoffMatches) {
+    const eventMatches = matchesByEvent.get(match.eventId) ?? [];
+    eventMatches.push(match);
+    matchesByEvent.set(match.eventId, eventMatches);
+  }
+
+  return [...matchesByEvent.values()].flatMap((eventMatches) => {
+    const firstRoundRank = Math.min(...eventMatches.map((match) => bracketRoundRank(match.bracketRound ?? "淘汰赛")));
+    return eventMatches.filter((match) => bracketRoundRank(match.bracketRound ?? "淘汰赛") === firstRoundRank);
+  });
 }
 
 function readAndResizeLogo(file: File): Promise<string> {
@@ -196,14 +231,67 @@ function BracketMatchCard({ match, teams, onChange }: { match: MatchResult; team
   );
 }
 
+function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchResult[]; teams: Team[]; onChange: (id: string, update: Partial<MatchResult>) => void }) {
+  const firstRound = firstRoundMatches(matches);
+  if (firstRound.length === 0) return null;
+
+  const teamById = new Map(teams.map((team) => [team.id, team]));
+  function candidatesFor(match: MatchResult): Team[] {
+    return teams.filter((team) => team.active && (match.region === "global" || team.region === match.region));
+  }
+  function updateParticipant(match: MatchResult, side: "teamA" | "teamB", value: string) {
+    const update = side === "teamA" ? { teamA: value } : { teamB: value };
+    onChange(match.id, { ...update, status: "scheduled", winner: undefined, maps: [], notes: undefined });
+  }
+
+  return (
+    <Paper variant="outlined" sx={{ p: 2 }}>
+      <Typography variant="subtitle1" fontWeight={700}>淘汰赛第一轮对阵配置</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5 }}>
+        在这里手动指定每场淘汰赛首轮的双方。更换队伍会清除该场已有赛果，避免旧结果被错误沿用。
+      </Typography>
+      <Stack spacing={1.25}>
+        {firstRound.map((match) => {
+          const options = new Map<string, Team>(candidatesFor(match).map((team) => [team.id, team]));
+          for (const participant of [match.teamA, match.teamB]) {
+            const currentTeam = teamById.get(participant);
+            if (currentTeam) options.set(currentTeam.id, currentTeam);
+          }
+          const eventLabel = eventTemplate(match.eventId).label;
+          return (
+            <Stack key={match.id} direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "center" }}>
+              <Box sx={{ minWidth: { md: 250 } }}>
+                <Typography variant="body2" fontWeight={700}>{eventLabel} · {match.bracketRound ?? "首轮"}</Typography>
+                <Typography variant="caption" color="text.secondary">{match.id}</Typography>
+              </Box>
+              <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 220 } }}>
+                <InputLabel id={`${match.id}-first-round-a-label`}>队伍 A</InputLabel>
+                <Select labelId={`${match.id}-first-round-a-label`} label="队伍 A" value={match.teamA} onChange={(event) => updateParticipant(match, "teamA", event.target.value)}>
+                  {[...options.values()].map((team) => <MenuItem key={team.id} value={team.id} disabled={team.id === match.teamB}>{team.name}</MenuItem>)}
+                  {!teamById.has(match.teamA) && <MenuItem value={match.teamA}>{displayParticipant(match.teamA, teamById)}</MenuItem>}
+                </Select>
+              </FormControl>
+              <Typography color="text.secondary" sx={{ alignSelf: { xs: "center", md: "auto" } }}>vs</Typography>
+              <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 220 } }}>
+                <InputLabel id={`${match.id}-first-round-b-label`}>队伍 B</InputLabel>
+                <Select labelId={`${match.id}-first-round-b-label`} label="队伍 B" value={match.teamB} onChange={(event) => updateParticipant(match, "teamB", event.target.value)}>
+                  {[...options.values()].map((team) => <MenuItem key={team.id} value={team.id} disabled={team.id === match.teamA}>{team.name}</MenuItem>)}
+                  {!teamById.has(match.teamB) && <MenuItem value={match.teamB}>{displayParticipant(match.teamB, teamById)}</MenuItem>}
+                </Select>
+              </FormControl>
+            </Stack>
+          );
+        })}
+      </Stack>
+    </Paper>
+  );
+}
+
 function BracketBoard({ matches, teams, onChange }: { matches: MatchResult[]; teams: Map<string, Team>; onChange: (id: string, update: Partial<MatchResult>) => void }) {
-  const roundOrder = ["Opening Round", "Quarterfinal", "Upper Bracket Quarterfinal", "Semifinal", "Upper Bracket Semifinal", "Upper Bracket Final", "Lower Bracket Round 1", "Lower Bracket Round 2", "Lower Bracket Semifinal", "Lower Bracket Final", "Final", "Grand Final"];
   const rounds = [...new Set(matches.map((match) => match.bracketRound ?? "淘汰赛"))].sort((left, right) => {
-    const leftIndex = roundOrder.findIndex((label) => left.includes(label));
-    const rightIndex = roundOrder.findIndex((label) => right.includes(label));
-    return (leftIndex < 0 ? roundOrder.length : leftIndex) - (rightIndex < 0 ? roundOrder.length : rightIndex);
+    return bracketRoundRank(left) - bracketRoundRank(right);
   });
-  return <Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{round}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} onChange={onChange} />)}</Box>)}</Box></Box>;
+  return <Stack spacing={2}><FirstRoundConfiguration matches={matches} teams={[...teams.values()]} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{round}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
 }
 
 function ScheduleConfiguration({ config, teams, onChange }: { config: TournamentConfig; teams: Team[]; onChange: (config: TournamentConfig) => void }) {
@@ -244,35 +332,129 @@ function TeamConfiguration({ teams, onChange }: { teams: Team[]; onChange: (team
   return <Stack spacing={2}><Alert severity="info" icon={<ImageIcon />}>Logo 会压缩为不超过 256px 的 PNG 并随草稿保存，当前不依赖额外对象存储；以后接入 Vercel Blob 时可直接替换保存字段。</Alert><Paper variant="outlined" sx={{ overflowX: "auto" }}><Table size="small" aria-label="队伍配置表"><TableHead><TableRow><TableCell>Logo</TableCell><TableCell>赛区</TableCell><TableCell>队伍名称</TableCell><TableCell>简称</TableCell><TableCell>国家/地区</TableCell><TableCell>启用</TableCell></TableRow></TableHead><TableBody>{teams.map((team) => <TableRow key={team.id} hover><TableCell><Stack direction="row" spacing={1} alignItems="center"><Avatar src={team.logoUrl} variant="rounded" sx={{ width: 36, height: 36 }}>{team.shortName.slice(0, 2)}</Avatar><Button component="label" size="small" variant="outlined" startIcon={<UploadFile />}>上传<input hidden type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" onChange={(event) => void uploadLogo(team.id, event.target.files?.[0])} /></Button>{team.logoUrl && <Tooltip title="移除 Logo"><IconButton size="small" aria-label={`移除${team.name} Logo`} onClick={() => updateTeam(team.id, { logoUrl: undefined })}><DeleteOutline fontSize="small" /></IconButton></Tooltip>}</Stack></TableCell><TableCell><Chip size="small" label={regionLabels[team.region]} /></TableCell><TableCell><TextField size="small" value={team.name} onChange={(event) => updateTeam(team.id, { name: event.target.value })} inputProps={{ "aria-label": `${team.id} 队伍名称` }} /></TableCell><TableCell><TextField size="small" value={team.shortName} onChange={(event) => updateTeam(team.id, { shortName: event.target.value })} inputProps={{ "aria-label": `${team.id} 队伍简称` }} sx={{ width: 130 }} /></TableCell><TableCell><TextField size="small" value={team.country ?? ""} onChange={(event) => updateTeam(team.id, { country: event.target.value })} placeholder="例如 CN" sx={{ width: 120 }} /></TableCell><TableCell><FormControlLabel control={<Switch checked={team.active} onChange={(event) => updateTeam(team.id, { active: event.target.checked })} />} label={team.active ? "启用" : "停用"} /></TableCell></TableRow>)}</TableBody></Table></Paper></Stack>;
 }
 
-export function AdminPanel({ locale }: { locale: Locale }) {
+export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDraft?: DraftPayload }) {
   const copy = getMessages(locale);
   const initial = useMemo(() => { const teams = allDemoTeams(); return { teams, ...createFullSchedule(teams) }; }, []);
   const [region, setRegion] = useState<RegionId>("amer");
-  const [teams, setTeams] = useState<Team[]>(initial.teams);
-  const [matches, setMatches] = useState<MatchResult[]>(initial.matches);
-  const [tournaments, setTournaments] = useState<TournamentConfig[]>(initial.tournaments);
+  const [teams, setTeams] = useState<Team[]>(() => initialDraft?.teams ?? initial.teams);
+  const [matches, setMatches] = useState<MatchResult[]>(() => initialDraft?.matches ?? initial.matches);
+  const [tournaments, setTournaments] = useState<TournamentConfig[]>(() => initialDraft?.tournaments ?? initial.tournaments);
   const [eventFilter, setEventFilter] = useState("all");
   const [phaseFilter, setPhaseFilter] = useState<"all" | "group" | "swiss" | "playoffs">("all");
   const [tab, setTab] = useState<AdminTab>("matches");
-  const [revision, setRevision] = useState(1);
+  const [revision, setRevision] = useState(() => initialDraft?.revision ?? 1);
   const [analysis, setAnalysis] = useState<RegionAnalysis | null>(null);
   const [analysisState, setAnalysisState] = useState<"idle" | "running" | "done" | "error">("idle");
   const [message, setMessage] = useState<{ severity: "success" | "info" | "error"; text: string } | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"clean" | "dirty" | "saving" | "saved" | "error" | "conflict">("clean");
   const [isPending, startTransition] = useTransition();
   const teamById = useMemo(() => new Map(teams.map((team) => [team.id, team])), [teams]);
-  const payload = useMemo(() => ({ seasonId: "vct-2026", revision, matches, teams, tournaments }), [matches, revision, teams, tournaments]);
+  const payload = useMemo<DraftPayload>(() => ({ seasonId: "vct-2026", revision, matches, teams, tournaments }), [matches, revision, teams, tournaments]);
+  const latestPayloadRef = useRef<DraftPayload>(payload);
+  const draftDirtyRef = useRef(false);
+  const changeTokenRef = useRef(0);
+  const saveInFlightRef = useRef(false);
+  const saveQueuedRef = useRef(false);
+  const saveDraftRef = useRef<(snapshot: DraftPayload, source: "auto" | "manual") => void>(() => undefined);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleMatches = useMemo(() => matches.filter((match) => (match.region === "global" || match.region === region) && (eventFilter === "all" || match.eventId === eventFilter) && (phaseFilter === "all" || match.phase === phaseFilter)), [eventFilter, matches, phaseFilter, region]);
   const visibleEvent = eventFilter === "all" ? null : eventTemplate(eventFilter);
   const bracketMatches = visibleMatches.filter((match) => match.phase === "playoffs");
   const listMatches = visibleMatches.filter((match) => match.phase !== "playoffs");
 
-  function updateMatch(id: string, update: Partial<MatchResult>) { setMatches((current) => current.map((match) => match.id === id ? { ...match, ...update } : match)); }
-  function updateTournament(config: TournamentConfig) { setTournaments((current) => current.map((item) => item.id === config.id ? config : item)); }
-  function runAction(action: "validate" | "save") {
+  useEffect(() => {
+    latestPayloadRef.current = payload;
+  }, [payload]);
+
+  function markDraftChanged() {
+    draftDirtyRef.current = true;
+    changeTokenRef.current += 1;
+    setDraftStatus("dirty");
+  }
+
+  function saveDraftNow(snapshot: DraftPayload, source: "auto" | "manual") {
+    if (saveInFlightRef.current) {
+      saveQueuedRef.current = true;
+      return;
+    }
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    saveInFlightRef.current = true;
+    const tokenAtStart = changeTokenRef.current;
+    setDraftStatus("saving");
     startTransition(async () => {
-      const result = action === "validate" ? await validateDraft(payload) : await saveDraft(payload);
-      setMessage({ severity: result.ok ? "success" : result.code === "DATABASE_NOT_CONFIGURED" ? "info" : "error", text: result.ok ? (action === "validate" ? "草稿校验通过，可以启动精确计算。" : `草稿已保存，revision ${result.revision}`) : result.message ?? "操作失败" });
-      if (result.ok && result.revision) setRevision(result.revision);
+      let savedSuccessfully = false;
+      try {
+        const result = await saveDraft(snapshot);
+        const changedDuringSave = changeTokenRef.current !== tokenAtStart;
+        if (result.ok) {
+          savedSuccessfully = true;
+          if (result.revision) setRevision(result.revision);
+          draftDirtyRef.current = changedDuringSave;
+          setDraftStatus(changedDuringSave ? "dirty" : "saved");
+          if (source === "manual") {
+            setMessage({ severity: "success", text: `草稿已保存，revision ${result.revision}` });
+          }
+        } else {
+          setDraftStatus(result.code === "REVISION_CONFLICT" ? "conflict" : "error");
+          setMessage({ severity: result.code === "DATABASE_NOT_CONFIGURED" ? "info" : "error", text: result.message ?? "草稿保存失败，请稍后重试" });
+        }
+      } catch {
+        setDraftStatus("error");
+        setMessage({ severity: "error", text: "草稿保存失败，请稍后重试" });
+      } finally {
+        saveInFlightRef.current = false;
+        const shouldSaveQueuedDraft = savedSuccessfully && saveQueuedRef.current && draftDirtyRef.current;
+        saveQueuedRef.current = false;
+        if (shouldSaveQueuedDraft) {
+          autoSaveTimerRef.current = setTimeout(() => {
+            autoSaveTimerRef.current = null;
+            saveDraftNow(latestPayloadRef.current, "auto");
+          }, 0);
+        }
+      }
+    });
+  }
+
+  useEffect(() => {
+    saveDraftRef.current = saveDraftNow;
+  });
+
+  useEffect(() => {
+    if (!draftDirtyRef.current) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      saveDraftRef.current(latestPayloadRef.current, "auto");
+    }, 700);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    };
+  }, [matches, revision, teams, tournaments]);
+
+  function updateMatch(id: string, update: Partial<MatchResult>) {
+    setMatches((current) => current.map((match) => match.id === id ? { ...match, ...update } : match));
+    markDraftChanged();
+  }
+  function updateTournament(config: TournamentConfig) {
+    setTournaments((current) => current.map((item) => item.id === config.id ? config : item));
+    markDraftChanged();
+  }
+  function updateTeams(nextTeams: Team[]) {
+    setTeams(nextTeams);
+    markDraftChanged();
+  }
+  function runAction(action: "validate" | "save") {
+    if (action === "save") {
+      saveDraftNow(payload, "manual");
+      return;
+    }
+    startTransition(async () => {
+      const result = await validateDraft(payload);
+      setMessage({ severity: result.ok ? "success" : result.code === "DATABASE_NOT_CONFIGURED" ? "info" : "error", text: result.ok ? "草稿校验通过，可以启动精确计算。" : result.message ?? "操作失败" });
     });
   }
   function runCalculation() {
@@ -289,10 +471,10 @@ export function AdminPanel({ locale }: { locale: Locale }) {
     <Card><CardContent>
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2} mb={2}><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><FormControl size="small" sx={{ minWidth: 130 }}><InputLabel id="admin-region-label">赛区</InputLabel><Select labelId="admin-region-label" label="赛区" value={region} onChange={(event) => setRegion(event.target.value as RegionId)}>{(["amer", "emea", "pacific", "china"] as RegionId[]).map((item) => <MenuItem key={item} value={item}>{regionLabels[item]}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 210 }}><InputLabel id="admin-event-label">赛事</InputLabel><Select labelId="admin-event-label" label="赛事" value={eventFilter} onChange={(event) => { setEventFilter(event.target.value); setPhaseFilter("all"); }}><MenuItem value="all">全年赛事</MenuItem>{EVENT_TEMPLATES.map((event) => <MenuItem key={event.id} value={event.id}>{event.label}{event.scope === "international" ? " · 全球" : " · 赛区"}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="admin-phase-label">阶段</InputLabel><Select labelId="admin-phase-label" label="阶段" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value as typeof phaseFilter)}><MenuItem value="all">全部阶段</MenuItem><MenuItem value="group">小组赛列表</MenuItem><MenuItem value="swiss">Swiss 列表</MenuItem><MenuItem value="playoffs">淘汰赛图</MenuItem></Select></FormControl></Stack><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button variant="outlined" startIcon={<Check />} onClick={() => runAction("validate")} disabled={isPending}>{copy.validate}</Button><Button variant="contained" startIcon={<Save />} onClick={() => runAction("save")} disabled={isPending}>{copy.saveDraft}</Button></Stack></Stack>
       <Tabs value={tab} onChange={(_, value: AdminTab) => setTab(value)} aria-label="赛事管理标签" sx={{ mb: 3 }}><Tab value="matches" label="赛果录入" icon={<Check />} iconPosition="start" /><Tab value="schedule" label="赛程配置" icon={<Groups />} iconPosition="start" /><Tab value="teams" label="队伍配置" icon={<ImageIcon />} iconPosition="start" /></Tabs>
-      {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛和 Swiss 使用列表输入；淘汰赛使用对阵图输入。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。</Alert>{phaseFilter === "playoffs" || (bracketMatches.length > 0 && listMatches.length === 0) ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} teams={teamById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛 / Swiss 列表</Typography><GroupMatchList matches={listMatches} teams={teamById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} teams={teamById} onChange={updateMatch} /></> : <GroupMatchList matches={listMatches.length > 0 ? listMatches : visibleMatches} teams={teamById} onChange={updateMatch} />}</Stack>}
+      {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛和 Swiss 使用列表输入；淘汰赛使用对阵图输入。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。编辑停止约 0.7 秒后会自动保存。</Alert>{phaseFilter === "playoffs" || (bracketMatches.length > 0 && listMatches.length === 0) ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} teams={teamById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛 / Swiss 列表</Typography><GroupMatchList matches={listMatches} teams={teamById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} teams={teamById} onChange={updateMatch} /></> : <GroupMatchList matches={listMatches.length > 0 ? listMatches : visibleMatches} teams={teamById} onChange={updateMatch} />}</Stack>}
       {tab === "schedule" && <Stack spacing={2}><Alert severity="info">Masters Santiago 和 Masters London 按 2026 赛制建模为 12 队全球赛事：四赛区各 3 队，8 队 Swiss，前 4 晋级 8 队双败淘汰。分组与淘汰赛起始轮次可在这里调整。</Alert>{selectedConfig ? <ScheduleConfiguration config={selectedConfig} teams={teams} onChange={updateTournament} /> : <Typography color="text.secondary">请选择赛事配置。</Typography>}</Stack>}
-      {tab === "teams" && <TeamConfiguration teams={teams} onChange={setTeams} />}
+      {tab === "teams" && <TeamConfiguration teams={teams} onChange={updateTeams} />}
     </CardContent></Card>
-    <Stack direction={{ xs: "column", md: "row" }} spacing={2} mt={3}><Card sx={{ flex: 1 }}><CardContent><Stack direction="row" spacing={1} alignItems="center"><PlayArrow color="primary" /><Typography variant="h6">精确计算</Typography></Stack><Typography variant="body2" color="text.secondary" mt={1}>校验通过后，浏览器 Web Worker 会对当前赛区未完成系列赛进行等可能枚举。</Typography><Button sx={{ mt: 2 }} variant="contained" startIcon={<PlayArrow />} onClick={runCalculation} disabled={analysisState === "running"}>{analysisState === "running" ? "计算中…" : "启动预览计算"}</Button>{analysisState === "error" && <Alert severity="error" sx={{ mt: 2 }}>Worker 计算失败，请刷新后重试。</Alert>}{analysis && <Typography variant="body2" color="text.secondary" mt={2}>完成：{analysis.scenarioGroups.length} 个精确情景，{analysis.totalOutcomes} 个等可能结果。</Typography>}</CardContent></Card><Card sx={{ flex: 1 }}><CardContent><Typography variant="h6">草稿状态</Typography><Typography variant="body2" color="text.secondary" mt={1}>revision {revision} · {teams.filter((team) => team.active).length} 支启用队伍 · {tournaments.length} 个赛事配置</Typography><Stack direction="row" spacing={1} mt={2}><Chip size="small" label={tab === "matches" ? "正在录入赛果" : tab === "schedule" ? "正在配置赛程" : "正在维护队伍"} /><Chip size="small" label={isPending ? "保存中" : "就绪"} color={isPending ? "warning" : "default"} /></Stack></CardContent></Card></Stack>
+    <Stack direction={{ xs: "column", md: "row" }} spacing={2} mt={3}><Card sx={{ flex: 1 }}><CardContent><Stack direction="row" spacing={1} alignItems="center"><PlayArrow color="primary" /><Typography variant="h6">精确计算</Typography></Stack><Typography variant="body2" color="text.secondary" mt={1}>校验通过后，浏览器 Web Worker 会对当前赛区未完成系列赛进行等可能枚举。</Typography><Button sx={{ mt: 2 }} variant="contained" startIcon={<PlayArrow />} onClick={runCalculation} disabled={analysisState === "running"}>{analysisState === "running" ? "计算中…" : "启动预览计算"}</Button>{analysisState === "error" && <Alert severity="error" sx={{ mt: 2 }}>Worker 计算失败，请刷新后重试。</Alert>}{analysis && <Typography variant="body2" color="text.secondary" mt={2}>完成：{analysis.scenarioGroups.length} 个精确情景，{analysis.totalOutcomes} 个等可能结果。</Typography>}</CardContent></Card><Card sx={{ flex: 1 }}><CardContent><Typography variant="h6">草稿状态</Typography><Typography variant="body2" color="text.secondary" mt={1}>revision {revision} · {teams.filter((team) => team.active).length} 支启用队伍 · {tournaments.length} 个赛事配置</Typography><Stack direction="row" spacing={1} mt={2}><Chip size="small" label={tab === "matches" ? "正在录入赛果" : tab === "schedule" ? "正在配置赛程" : "正在维护队伍"} /><Chip size="small" label={draftStatus === "clean" ? "就绪" : draftStatus === "dirty" ? "有未保存修改" : draftStatus === "saving" ? "自动保存中" : draftStatus === "saved" ? "已自动保存" : draftStatus === "conflict" ? "版本冲突" : "保存失败"} color={draftStatus === "saving" ? "warning" : draftStatus === "error" || draftStatus === "conflict" ? "error" : draftStatus === "dirty" ? "warning" : draftStatus === "saved" ? "success" : "default"} /></Stack></CardContent></Card></Stack>
   </Container>;
 }
