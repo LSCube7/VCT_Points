@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useMemo, useRef, useState, useTransition } from "react";
 import {
   Add,
   Check,
@@ -350,53 +350,30 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
   const [isPending, startTransition] = useTransition();
   const teamById = useMemo(() => new Map(teams.map((team) => [team.id, team])), [teams]);
   const payload = useMemo<DraftPayload>(() => ({ seasonId: "vct-2026", revision, matches, teams, tournaments }), [matches, revision, teams, tournaments]);
-  const latestPayloadRef = useRef<DraftPayload>(payload);
-  const draftDirtyRef = useRef(false);
   const changeTokenRef = useRef(0);
   const saveInFlightRef = useRef(false);
-  const saveQueuedRef = useRef(false);
-  const saveDraftRef = useRef<(snapshot: DraftPayload, source: "auto" | "manual") => void>(() => undefined);
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const visibleMatches = useMemo(() => matches.filter((match) => (match.region === "global" || match.region === region) && (eventFilter === "all" || match.eventId === eventFilter) && (phaseFilter === "all" || match.phase === phaseFilter)), [eventFilter, matches, phaseFilter, region]);
   const visibleEvent = eventFilter === "all" ? null : eventTemplate(eventFilter);
   const bracketMatches = visibleMatches.filter((match) => match.phase === "playoffs");
   const listMatches = visibleMatches.filter((match) => match.phase !== "playoffs");
 
-  useEffect(() => {
-    latestPayloadRef.current = payload;
-  }, [payload]);
-
   function markDraftChanged() {
-    draftDirtyRef.current = true;
     changeTokenRef.current += 1;
     setDraftStatus("dirty");
   }
 
-  function saveDraftNow(snapshot: DraftPayload, source: "auto" | "manual") {
-    if (saveInFlightRef.current) {
-      saveQueuedRef.current = true;
-      return;
-    }
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
-    }
+  function saveDraftNow(snapshot: DraftPayload) {
+    if (saveInFlightRef.current) return;
     saveInFlightRef.current = true;
     const tokenAtStart = changeTokenRef.current;
     setDraftStatus("saving");
     startTransition(async () => {
-      let savedSuccessfully = false;
       try {
         const result = await saveDraft(snapshot);
-        const changedDuringSave = changeTokenRef.current !== tokenAtStart;
         if (result.ok) {
-          savedSuccessfully = true;
           if (result.revision) setRevision(result.revision);
-          draftDirtyRef.current = changedDuringSave;
-          setDraftStatus(changedDuringSave ? "dirty" : "saved");
-          if (source === "manual") {
-            setMessage({ severity: "success", text: `草稿已保存，revision ${result.revision}` });
-          }
+          setDraftStatus(changeTokenRef.current === tokenAtStart ? "saved" : "dirty");
+          setMessage({ severity: "success", text: `草稿已保存，revision ${result.revision}` });
         } else {
           setDraftStatus(result.code === "REVISION_CONFLICT" ? "conflict" : "error");
           setMessage({ severity: result.code === "DATABASE_NOT_CONFIGURED" ? "info" : "error", text: result.message ?? "草稿保存失败，请稍后重试" });
@@ -406,34 +383,9 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
         setMessage({ severity: "error", text: "草稿保存失败，请稍后重试" });
       } finally {
         saveInFlightRef.current = false;
-        const shouldSaveQueuedDraft = savedSuccessfully && saveQueuedRef.current && draftDirtyRef.current;
-        saveQueuedRef.current = false;
-        if (shouldSaveQueuedDraft) {
-          autoSaveTimerRef.current = setTimeout(() => {
-            autoSaveTimerRef.current = null;
-            saveDraftNow(latestPayloadRef.current, "auto");
-          }, 0);
-        }
       }
     });
   }
-
-  useEffect(() => {
-    saveDraftRef.current = saveDraftNow;
-  });
-
-  useEffect(() => {
-    if (!draftDirtyRef.current) return;
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
-      autoSaveTimerRef.current = null;
-      saveDraftRef.current(latestPayloadRef.current, "auto");
-    }, 700);
-    return () => {
-      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-      autoSaveTimerRef.current = null;
-    };
-  }, [matches, revision, teams, tournaments]);
 
   function updateMatch(id: string, update: Partial<MatchResult>) {
     setMatches((current) => current.map((match) => match.id === id ? { ...match, ...update } : match));
@@ -449,7 +401,7 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
   }
   function runAction(action: "validate" | "save") {
     if (action === "save") {
-      saveDraftNow(payload, "manual");
+      saveDraftNow(payload);
       return;
     }
     startTransition(async () => {
@@ -471,10 +423,10 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     <Card><CardContent>
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2} mb={2}><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><FormControl size="small" sx={{ minWidth: 130 }}><InputLabel id="admin-region-label">赛区</InputLabel><Select labelId="admin-region-label" label="赛区" value={region} onChange={(event) => setRegion(event.target.value as RegionId)}>{(["amer", "emea", "pacific", "china"] as RegionId[]).map((item) => <MenuItem key={item} value={item}>{regionLabels[item]}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 210 }}><InputLabel id="admin-event-label">赛事</InputLabel><Select labelId="admin-event-label" label="赛事" value={eventFilter} onChange={(event) => { setEventFilter(event.target.value); setPhaseFilter("all"); }}><MenuItem value="all">全年赛事</MenuItem>{EVENT_TEMPLATES.map((event) => <MenuItem key={event.id} value={event.id}>{event.label}{event.scope === "international" ? " · 全球" : " · 赛区"}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="admin-phase-label">阶段</InputLabel><Select labelId="admin-phase-label" label="阶段" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value as typeof phaseFilter)}><MenuItem value="all">全部阶段</MenuItem><MenuItem value="group">小组赛列表</MenuItem><MenuItem value="swiss">Swiss 列表</MenuItem><MenuItem value="playoffs">淘汰赛图</MenuItem></Select></FormControl></Stack><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button variant="outlined" startIcon={<Check />} onClick={() => runAction("validate")} disabled={isPending}>{copy.validate}</Button><Button variant="contained" startIcon={<Save />} onClick={() => runAction("save")} disabled={isPending}>{copy.saveDraft}</Button></Stack></Stack>
       <Tabs value={tab} onChange={(_, value: AdminTab) => setTab(value)} aria-label="赛事管理标签" sx={{ mb: 3 }}><Tab value="matches" label="赛果录入" icon={<Check />} iconPosition="start" /><Tab value="schedule" label="赛程配置" icon={<Groups />} iconPosition="start" /><Tab value="teams" label="队伍配置" icon={<ImageIcon />} iconPosition="start" /></Tabs>
-      {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛和 Swiss 使用列表输入；淘汰赛使用对阵图输入。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。编辑停止约 0.7 秒后会自动保存。</Alert>{phaseFilter === "playoffs" || (bracketMatches.length > 0 && listMatches.length === 0) ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} teams={teamById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛 / Swiss 列表</Typography><GroupMatchList matches={listMatches} teams={teamById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} teams={teamById} onChange={updateMatch} /></> : <GroupMatchList matches={listMatches.length > 0 ? listMatches : visibleMatches} teams={teamById} onChange={updateMatch} />}</Stack>}
+      {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛和 Swiss 使用列表输入；淘汰赛使用对阵图输入。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。草稿允许保留未完成赛果，请点击“保存草稿”手动保存。</Alert>{phaseFilter === "playoffs" || (bracketMatches.length > 0 && listMatches.length === 0) ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} teams={teamById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛 / Swiss 列表</Typography><GroupMatchList matches={listMatches} teams={teamById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} teams={teamById} onChange={updateMatch} /></> : <GroupMatchList matches={listMatches.length > 0 ? listMatches : visibleMatches} teams={teamById} onChange={updateMatch} />}</Stack>}
       {tab === "schedule" && <Stack spacing={2}><Alert severity="info">Masters Santiago 和 Masters London 按 2026 赛制建模为 12 队全球赛事：四赛区各 3 队，8 队 Swiss，前 4 晋级 8 队双败淘汰。分组与淘汰赛起始轮次可在这里调整。</Alert>{selectedConfig ? <ScheduleConfiguration config={selectedConfig} teams={teams} onChange={updateTournament} /> : <Typography color="text.secondary">请选择赛事配置。</Typography>}</Stack>}
       {tab === "teams" && <TeamConfiguration teams={teams} onChange={updateTeams} />}
     </CardContent></Card>
-    <Stack direction={{ xs: "column", md: "row" }} spacing={2} mt={3}><Card sx={{ flex: 1 }}><CardContent><Stack direction="row" spacing={1} alignItems="center"><PlayArrow color="primary" /><Typography variant="h6">精确计算</Typography></Stack><Typography variant="body2" color="text.secondary" mt={1}>校验通过后，浏览器 Web Worker 会对当前赛区未完成系列赛进行等可能枚举。</Typography><Button sx={{ mt: 2 }} variant="contained" startIcon={<PlayArrow />} onClick={runCalculation} disabled={analysisState === "running"}>{analysisState === "running" ? "计算中…" : "启动预览计算"}</Button>{analysisState === "error" && <Alert severity="error" sx={{ mt: 2 }}>Worker 计算失败，请刷新后重试。</Alert>}{analysis && <Typography variant="body2" color="text.secondary" mt={2}>完成：{analysis.scenarioGroups.length} 个精确情景，{analysis.totalOutcomes} 个等可能结果。</Typography>}</CardContent></Card><Card sx={{ flex: 1 }}><CardContent><Typography variant="h6">草稿状态</Typography><Typography variant="body2" color="text.secondary" mt={1}>revision {revision} · {teams.filter((team) => team.active).length} 支启用队伍 · {tournaments.length} 个赛事配置</Typography><Stack direction="row" spacing={1} mt={2}><Chip size="small" label={tab === "matches" ? "正在录入赛果" : tab === "schedule" ? "正在配置赛程" : "正在维护队伍"} /><Chip size="small" label={draftStatus === "clean" ? "就绪" : draftStatus === "dirty" ? "有未保存修改" : draftStatus === "saving" ? "自动保存中" : draftStatus === "saved" ? "已自动保存" : draftStatus === "conflict" ? "版本冲突" : "保存失败"} color={draftStatus === "saving" ? "warning" : draftStatus === "error" || draftStatus === "conflict" ? "error" : draftStatus === "dirty" ? "warning" : draftStatus === "saved" ? "success" : "default"} /></Stack></CardContent></Card></Stack>
+    <Stack direction={{ xs: "column", md: "row" }} spacing={2} mt={3}><Card sx={{ flex: 1 }}><CardContent><Stack direction="row" spacing={1} alignItems="center"><PlayArrow color="primary" /><Typography variant="h6">精确计算</Typography></Stack><Typography variant="body2" color="text.secondary" mt={1}>校验通过后，浏览器 Web Worker 会对当前赛区未完成系列赛进行等可能枚举。</Typography><Button sx={{ mt: 2 }} variant="contained" startIcon={<PlayArrow />} onClick={runCalculation} disabled={analysisState === "running"}>{analysisState === "running" ? "计算中…" : "启动预览计算"}</Button>{analysisState === "error" && <Alert severity="error" sx={{ mt: 2 }}>Worker 计算失败，请刷新后重试。</Alert>}{analysis && <Typography variant="body2" color="text.secondary" mt={2}>完成：{analysis.scenarioGroups.length} 个精确情景，{analysis.totalOutcomes} 个等可能结果。</Typography>}</CardContent></Card><Card sx={{ flex: 1 }}><CardContent><Typography variant="h6">草稿状态</Typography><Typography variant="body2" color="text.secondary" mt={1}>revision {revision} · {teams.filter((team) => team.active).length} 支启用队伍 · {tournaments.length} 个赛事配置</Typography><Stack direction="row" spacing={1} mt={2}><Chip size="small" label={tab === "matches" ? "正在录入赛果" : tab === "schedule" ? "正在配置赛程" : "正在维护队伍"} /><Chip size="small" label={draftStatus === "clean" ? "就绪" : draftStatus === "dirty" ? "有未保存修改" : draftStatus === "saving" ? "保存中" : draftStatus === "saved" ? "已保存" : draftStatus === "conflict" ? "版本冲突" : "保存失败"} color={draftStatus === "saving" ? "warning" : draftStatus === "error" || draftStatus === "conflict" ? "error" : draftStatus === "dirty" ? "warning" : draftStatus === "saved" ? "success" : "default"} /></Stack></CardContent></Card></Stack>
   </Container>;
 }
