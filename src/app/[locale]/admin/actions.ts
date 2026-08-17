@@ -1,7 +1,7 @@
 "use server";
 
 import { createHash } from "node:crypto";
-import { eq, desc } from "drizzle-orm";
+import { and, eq, desc } from "drizzle-orm";
 import { draftVersions } from "../../../../db/schema";
 import { getDb, getSql } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
@@ -28,8 +28,30 @@ function stableJson(value: unknown): string {
   return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(",")}}`;
 }
 
+function getNestedErrorField(error: unknown, field: string): string | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (typeof current === "object" && current !== null) {
+      const value = (current as Record<string, unknown>)[field];
+      if (typeof value === "string" && value) return value;
+      current = (current as { cause?: unknown }).cause;
+    } else {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+function redactErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : "Unknown error";
+  return message
+    .replace(/\bparams:\s*[\s\S]*$/i, "params: [redacted]")
+    .replace(/\b(detail|context|hint):\s*[\s\S]*$/i, "$1: [redacted]")
+    .slice(0, 240);
+}
+
 function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+  return getNestedErrorField(error, "code") === "23505";
 }
 
 export async function validateDraft(payload: unknown): Promise<AdminActionResult> {
@@ -71,6 +93,8 @@ export async function saveDraft(payload: unknown): Promise<AdminActionResult> {
   if (!parsed.success) {
     return { ok: false, code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "草稿数据格式错误" };
   }
+  let candidateRevision: number | undefined;
+  let candidateInputHash: string | undefined;
   try {
     const session = await requireAdmin();
     const db = getDb();
@@ -89,6 +113,8 @@ export async function saveDraft(payload: unknown): Promise<AdminActionResult> {
     const storedPayload = { ...parsed.data, revision };
     const serialized = stableJson(storedPayload);
     const inputHash = createHash("sha256").update(serialized).digest("hex");
+    candidateRevision = revision;
+    candidateInputHash = inputHash;
     const sql = getSql();
     await sql.transaction((tx) => [
       tx`insert into "draft_versions" ("season_id", "revision", "status", "payload", "input_hash", "updated_by") values (${parsed.data.seasonId}, ${revision}, ${"draft"}, ${JSON.stringify(storedPayload)}::jsonb, ${inputHash}, ${session.email})`,
@@ -104,8 +130,29 @@ export async function saveDraft(payload: unknown): Promise<AdminActionResult> {
       return { ok: false, code: "DATABASE_NOT_CONFIGURED", message: "尚未连接 Neon 数据库；当前页面仅展示本地预览" };
     }
     if (isUniqueViolation(error)) {
+      if (candidateRevision !== undefined && candidateInputHash) {
+        try {
+          const existing = await getDb()
+            .select({ revision: draftVersions.revision, inputHash: draftVersions.inputHash })
+            .from(draftVersions)
+            .where(and(eq(draftVersions.seasonId, parsed.data.seasonId), eq(draftVersions.revision, candidateRevision)))
+            .limit(1);
+          if (existing[0]?.inputHash === candidateInputHash) return { ok: true, revision: candidateRevision };
+        } catch (lookupError) {
+          console.error("[admin.saveDraft.lookup] " + JSON.stringify({
+            code: getNestedErrorField(lookupError, "code"),
+            errorName: lookupError instanceof Error ? lookupError.name : "UnknownError",
+            errorMessage: redactErrorMessage(lookupError),
+          }));
+        }
+      }
       return { ok: false, code: "REVISION_CONFLICT", message: "草稿已被其他管理员更新，请刷新后重试" };
     }
+    console.error("[admin.saveDraft] " + JSON.stringify({
+      code: getNestedErrorField(error, "code"),
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: redactErrorMessage(error),
+    }));
     return { ok: false, code: "SAVE_FAILED", message: "草稿保存失败，请查看服务端日志" };
   }
 }
