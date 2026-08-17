@@ -199,6 +199,56 @@ function roundRobinMatches(event: EventTemplate, region: RegionId, teamIds: stri
   return matches;
 }
 
+function groupMatchKey(groupId: string | undefined, teamA: string, teamB: string): string {
+  return JSON.stringify([groupId ?? "", ...[teamA, teamB].sort()]);
+}
+
+function isGeneratedGroupMatch(match: MatchResult, eventId: string, region: RegionId): boolean {
+  return match.eventId === eventId
+    && match.region === region
+    && match.isRegularSeason
+    && !match.isTiebreaker
+    && (match.phase === undefined || match.phase === "group");
+}
+
+export interface GroupScheduleRebuildResult {
+  matches: MatchResult[];
+  removedResults: MatchResult[];
+}
+
+/**
+ * Rebuild regional round-robin matches after an administrator changes group
+ * membership. Results are matched by group and unordered team pair instead of
+ * by the positional match id, so changing the order inside a group does not
+ * silently discard an entered result.
+ */
+export function rebuildRegionalGroupMatches(matches: MatchResult[], config: TournamentConfig): GroupScheduleRebuildResult {
+  if (config.scope !== "regional" || config.format !== "group-plus-playoffs") return { matches, removedResults: [] };
+  const region = tournamentRegion(config, matches);
+  if (!region) return { matches, removedResults: [] };
+
+  const event = eventTemplate(config.eventId);
+  const previousGroupMatches = matches.filter((match) => isGeneratedGroupMatch(match, config.eventId, region));
+  const previousByKey = new Map(previousGroupMatches.map((match) => [groupMatchKey(match.groupId, match.teamA, match.teamB), match]));
+  const generated = (config.groupStage?.groups ?? []).flatMap((group) => roundRobinMatches(event, region, group.teamIds, group.id, group.name));
+  const generatedKeys = new Set(generated.map((match) => groupMatchKey(match.groupId, match.teamA, match.teamB)));
+  const removedResults = previousGroupMatches.filter((match) => !generatedKeys.has(groupMatchKey(match.groupId, match.teamA, match.teamB)) && match.status !== "scheduled" && match.status !== "cancelled");
+  const rebuilt = generated.map((match) => {
+    const previous = previousByKey.get(groupMatchKey(match.groupId, match.teamA, match.teamB));
+    if (!previous) return match;
+    return {
+      ...match,
+      status: previous.status,
+      winner: previous.winner,
+      maps: previous.maps.map((map) => ({ ...map })),
+      playedAt: previous.playedAt,
+      notes: previous.notes,
+    };
+  });
+  const preservedNonGenerated = matches.filter((match) => !isGeneratedGroupMatch(match, config.eventId, region));
+  return { matches: [...preservedNonGenerated, ...rebuilt], removedResults };
+}
+
 function regionalBracketMatches(event: EventTemplate, region: RegionId, teamIds: string[]): MatchResult[] {
   const slots = teamIds.slice(0, 8);
   const matches: MatchResult[] = [];

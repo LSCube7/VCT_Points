@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allDemoTeams } from "../src/lib/data/demo";
-import { applyTripleEliminationSeedOrder, createFullSchedule, hydrateDraftSchedule } from "../src/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule, hydrateDraftSchedule, rebuildRegionalGroupMatches } from "../src/lib/schedule";
 import { validateMatchResult } from "../src/lib/validation";
 
 describe("2026 schedule templates", () => {
@@ -190,5 +190,85 @@ describe("map score validation", () => {
   it("requires a reason for forfeits and never accepts map scores", () => {
     expect(validateMatchResult({ ...base, status: "forfeit", winner: "a", maps: [], notes: "未能按时出场" }).success).toBe(true);
     expect(validateMatchResult({ ...base, status: "forfeit", winner: "a", maps: [] }).success).toBe(false);
+  });
+});
+
+describe("regional group schedule synchronization", () => {
+  it("rebuilds round-robin pairings from the updated groups", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const config = schedule.tournaments.find((tournament) => tournament.id === "stage-1-amer");
+    if (!config?.groupStage) throw new Error("test fixture missing Stage 1 groups");
+    const [alpha, omega] = config.groupStage.groups;
+    if (!alpha || !omega) throw new Error("test fixture missing two groups");
+    const movedTeam = omega.teamIds[0];
+    const nextConfig = {
+      ...config,
+      groupStage: {
+        ...config.groupStage,
+        groups: [
+          { ...alpha, name: "Alpha Updated", teamIds: [...alpha.teamIds, movedTeam] },
+          { ...omega, teamIds: omega.teamIds.filter((teamId) => teamId !== movedTeam) },
+        ],
+      },
+    };
+
+    const rebuilt = rebuildRegionalGroupMatches(schedule.matches, nextConfig);
+    const groupMatches = rebuilt.matches.filter((match) => match.eventId === "stage-1" && match.region === "amer" && match.phase === "group");
+    expect(groupMatches).toHaveLength(31);
+    expect(new Set(groupMatches.map((match) => match.groupId))).toEqual(new Set([alpha.id, omega.id]));
+    expect(groupMatches.filter((match) => match.groupId === alpha.id)).toHaveLength(21);
+    expect(groupMatches.filter((match) => match.groupId === omega.id)).toHaveLength(10);
+    expect(groupMatches.some((match) => match.teamA === movedTeam || match.teamB === movedTeam)).toBe(true);
+  });
+
+  it("preserves results for pairs that stay in the same group and reports removed results", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const config = schedule.tournaments.find((tournament) => tournament.id === "stage-1-amer");
+    if (!config?.groupStage) throw new Error("test fixture missing Stage 1 groups");
+    const [alpha, omega] = config.groupStage.groups;
+    if (!alpha || !omega) throw new Error("test fixture missing two groups");
+    const existing = schedule.matches.find((match) => match.id === "amer-stage-1-alpha-1-2");
+    if (!existing) throw new Error("test fixture missing group match");
+    const completed = {
+      ...existing,
+      status: "completed" as const,
+      winner: existing.teamA,
+      maps: [{ map: "Abyss", teamARounds: 13, teamBRounds: 8 }],
+    };
+    const matches = schedule.matches.map((match) => match.id === existing.id ? completed : match);
+    const reorderedConfig = {
+      ...config,
+      groupStage: {
+        ...config.groupStage,
+        groups: [
+          { ...alpha, name: "Alpha Updated", teamIds: [...alpha.teamIds].reverse() },
+          omega,
+        ],
+      },
+    };
+    const reordered = rebuildRegionalGroupMatches(matches, reorderedConfig);
+    const preserved = reordered.matches.find((match) => {
+      const pair = new Set([match.teamA, match.teamB]);
+      return match.eventId === "stage-1" && match.region === "amer" && match.groupId === alpha.id && pair.has(existing.teamA) && pair.has(existing.teamB) && pair.size === 2;
+    });
+    expect(preserved?.status).toBe("completed");
+    expect(preserved?.winner).toBe(existing.teamA);
+    expect(preserved?.maps).toEqual([{ map: "Abyss", teamARounds: 13, teamBRounds: 8 }]);
+    expect(preserved?.roundLabel).toBe("Alpha Updated · 常规赛");
+
+    const movedTeam = alpha.teamIds[1];
+    const movedConfig = {
+      ...config,
+      groupStage: {
+        ...config.groupStage,
+        groups: [
+          { ...alpha, teamIds: alpha.teamIds.filter((teamId) => teamId !== movedTeam) },
+          { ...omega, teamIds: [...omega.teamIds, movedTeam] },
+        ],
+      },
+    };
+    const moved = rebuildRegionalGroupMatches(matches, movedConfig);
+    expect(moved.removedResults.map((match) => match.id)).toContain(existing.id);
+    expect(moved.matches.some((match) => match.eventId === "stage-1" && match.region === "amer" && match.groupId === alpha.id && new Set([match.teamA, match.teamB]).has(existing.teamA) && new Set([match.teamA, match.teamB]).has(existing.teamB))).toBe(false);
   });
 });

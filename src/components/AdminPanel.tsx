@@ -50,7 +50,7 @@ import { resolveBracketParticipant } from "@/lib/bracket-display";
 import { runRegionWorker } from "@/lib/engine/worker-client";
 import { getMessages } from "@/lib/i18n/messages";
 import { calculateMastersAllocations, mastersParticipantIds, mastersSwissParticipantIds } from "@/lib/masters";
-import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, hydrateDraftSchedule, MAP_POOL, tournamentRegion } from "@/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, hydrateDraftSchedule, MAP_POOL, rebuildRegionalGroupMatches, tournamentRegion } from "@/lib/schedule";
 import { inspectKickoffScheduleMigration, migrateKickoffSchedule, type KickoffScheduleMigrationPreview } from "@/lib/schedule-migration";
 import type { RegionAnalysis } from "@/lib/types";
 import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
@@ -480,9 +480,9 @@ function ScheduleConfiguration({ config, teams, matches, migration, onMigrate, o
     {config.scope === "international" && <MastersAllocationSummary teams={teams} />}
     {isTripleElimination ? <TripleEliminationConfiguration config={config} teams={teams} matches={matches} migration={migration} onChange={onChange} onMigrate={onMigrate} onOpenMatches={onOpenMatches} /> : config.scope === "international" ? <Alert severity="info" icon={<Settings />}>国际赛事的 12 个名额和 Swiss 参赛池由四赛区名额自动计算，不在这里手动改分组。请到“赛果录入”页填写官方抽签的 Swiss 首轮和淘汰赛首轮对阵。</Alert> : <>
       <Divider />
-      <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1">小组 / Swiss 分组</Typography><Typography variant="body2" color="text.secondary">当前使用多选框保存队伍归属；不会覆盖已经录入的比赛结果。</Typography></Box><Button startIcon={<Add />} onClick={addGroup}>新增分组</Button></Stack>
+      <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1">小组 / Swiss 分组</Typography><Typography variant="body2" color="text.secondary">修改分组会同步重建常规赛对阵；仍在同一分组的相同对局会保留赛果。</Typography></Box><Button startIcon={<Add />} onClick={addGroup}>新增分组</Button></Stack>
       <Grid container spacing={2}>{groups.map((group) => <Grid key={group.id} size={{ xs: 12, md: 6 }}><Paper variant="outlined" sx={{ p: 2 }}><Stack direction="row" spacing={1} alignItems="center" mb={1.5}><TextField size="small" label="分组名称" value={group.name} onChange={(event) => updateGroup(group.id, { name: event.target.value })} sx={{ flex: 1 }} /><IconButton aria-label={`删除${group.name}`} size="small" onClick={() => removeGroup(group.id)} disabled={groups.length <= 1}><DeleteOutline /></IconButton></Stack><FormControl fullWidth size="small"><InputLabel id={`${config.id}-${group.id}-teams-label`}>队伍</InputLabel><Select multiple labelId={`${config.id}-${group.id}-teams-label`} label="队伍" value={group.teamIds} onChange={(event) => updateGroup(group.id, { teamIds: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value as string[] })} renderValue={(selected) => <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(selected as string[]).map((teamId) => <Chip key={teamId} size="small" label={displayParticipant(teamId, new Map(teams.map((team) => [team.id, team])))} />)}</Stack>}>{eligibleTeams.map((team) => <MenuItem key={team.id} value={team.id}>{team.name}</MenuItem>)}</Select></FormControl></Paper></Grid>)}</Grid>
-      <Alert severity="info" icon={<Settings />}>分组和淘汰赛起始设置会保存到草稿，用于后续校验；已生成的对阵和已录入赛果请在“赛果录入”页维护。</Alert>
+      <Alert severity="info" icon={<Settings />}>分组调整后会立即同步到“赛果录入”的小组赛列表。移出新分组的已录入赛果会先弹窗确认，确认后才会删除。</Alert>
     </>}
   </Stack>;
 }
@@ -581,11 +581,27 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     const previousRefs = previous?.bracket?.teamRefs ?? [];
     const nextRefs = config.bracket?.teamRefs ?? [];
     const seedOrderChanged = previous?.format === "triple-elimination" && config.format === "triple-elimination" && JSON.stringify(previousRefs) !== JSON.stringify(nextRefs);
+    const groupStageChanged = previous?.scope === "regional"
+      && config.scope === "regional"
+      && previous.format === "group-plus-playoffs"
+      && config.format === "group-plus-playoffs"
+      && JSON.stringify(previous.groupStage?.groups ?? []) !== JSON.stringify(config.groupStage?.groups ?? []);
     let nextMatches = matches;
     let clearedResults = false;
+    let rebuiltGroupSchedule = false;
+    let removedGroupResults = 0;
+    if (groupStageChanged) {
+      const rebuilt = rebuildRegionalGroupMatches(nextMatches, config);
+      if (rebuilt.removedResults.length > 0 && typeof window !== "undefined" && !window.confirm(`调整分组会移除 ${rebuilt.removedResults.length} 场已录入的常规赛赛果。确认后这些赛果将从当前草稿中删除，是否继续？`)) return;
+      if (rebuilt.matches !== nextMatches) {
+        nextMatches = rebuilt.matches;
+        rebuiltGroupSchedule = true;
+        removedGroupResults = rebuilt.removedResults.length;
+      }
+    }
     if (seedOrderChanged) {
       const seedRegion = tournamentRegion(config, matches);
-      const regionMatches = seedRegion ? matches.filter((match) => match.eventId === config.eventId && match.region === seedRegion && match.phase === "playoffs") : [];
+      const regionMatches = seedRegion ? nextMatches.filter((match) => match.eventId === config.eventId && match.region === seedRegion && match.phase === "playoffs") : [];
       const legacySchedule = regionMatches.length > 0 && (regionMatches.length !== 30 || !regionMatches.some((match) => match.bracketRound === "Middle Bracket Round 1"));
       if (legacySchedule) {
         setMessage({ severity: "error", text: "请先点击“迁移全部旧版 Kickoff 赛程”，再配置种子顺位。" });
@@ -593,7 +609,7 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
       }
       const hasResults = regionMatches.some((match) => match.status !== "scheduled");
       if (hasResults && typeof window !== "undefined" && !window.confirm("修改种子顺位会清空该赛区 Kickoff 淘汰赛的已有赛果，以避免沿用错误的对阵结果。是否继续？")) return;
-      nextMatches = applyTripleEliminationSeedOrder(matches, config).map((match) => {
+      nextMatches = applyTripleEliminationSeedOrder(nextMatches, config).map((match) => {
         if (!seedRegion || match.eventId !== config.eventId || match.region !== seedRegion || match.phase !== "playoffs" || !hasResults) return match;
         return { ...match, status: "scheduled", winner: undefined, maps: [], playedAt: undefined, notes: undefined };
       });
@@ -602,7 +618,13 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     setTournaments((current) => current.map((item) => item.id === config.id ? config : item));
     if (nextMatches !== matches) setMatches(nextMatches);
     markDraftChanged();
-    if (clearedResults) setMessage({ severity: "info", text: "种子顺位已更新，该赛区 Kickoff 淘汰赛旧赛果已清空，请重新录入并保存草稿。" });
+    if (rebuiltGroupSchedule && clearedResults) {
+      setMessage({ severity: "info", text: `分组已更新，常规赛对阵已同步${removedGroupResults > 0 ? `，移除了 ${removedGroupResults} 场旧赛果` : ""}；种子顺位更新后 Kickoff 淘汰赛旧赛果也已清空，请重新录入并保存草稿。` });
+    } else if (rebuiltGroupSchedule) {
+      setMessage({ severity: "success", text: `分组已更新，常规赛对阵已同步${removedGroupResults > 0 ? `，移除了 ${removedGroupResults} 场旧赛果` : ""}。` });
+    } else if (clearedResults) {
+      setMessage({ severity: "info", text: "种子顺位已更新，该赛区 Kickoff 淘汰赛旧赛果已清空，请重新录入并保存草稿。" });
+    }
   }
   function updateTeams(nextTeams: Team[]) {
     setTeams(nextTeams);
