@@ -72,7 +72,7 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
       ...bracketConfig(template.format === "triple-elimination" ? "triple-elimination" : "double-elimination", template.format === "swiss-plus-playoffs" ? [
         ...teams.filter((team) => team.id.endsWith("-team-1")).map((team) => `seed:${team.id}`),
         ...Array.from({ length: 4 }, (_, index) => `winner:${template.id}-swiss-${index + 1}`),
-      ] : teamIds.slice(0, 8)),
+      ] : template.format === "triple-elimination" ? teamIds.slice(0, 12) : teamIds.slice(0, 8)),
     },
   };
 }
@@ -155,6 +155,177 @@ function regionalBracketMatches(event: EventTemplate, region: RegionId, teamIds:
   return matches;
 }
 
+function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId, teamIds: string[]): MatchResult[] {
+  const prefix = `${region}-${event.id}`;
+  const matches: MatchResult[] = [];
+  const matchId = (suffix: string) => `${prefix}-${suffix}`;
+  const winnerRef = (suffix: string) => `winner:${matchId(suffix)}`;
+  const loserRef = (suffix: string) => `loser:${matchId(suffix)}`;
+  const seedRef = (index: number) => teamIds[index] ?? `seed:${index + 1}`;
+  const addMatch = ({
+    suffix,
+    teamA,
+    teamB,
+    bracketRound,
+    roundLabel,
+    bestOf = 3,
+  }: {
+    suffix: string;
+    teamA: string;
+    teamB: string;
+    bracketRound: string;
+    roundLabel: string;
+    bestOf?: 3 | 5;
+  }) => {
+    matches.push(emptyMatch({
+      id: matchId(suffix),
+      event,
+      region,
+      stage: event.stage,
+      phase: "playoffs",
+      teamA,
+      teamB,
+      bracketRound,
+      roundLabel,
+      bestOf,
+    }));
+  };
+
+  // The top four seeds enter in Upper Round 2. The other eight teams start here.
+  for (let index = 0; index < 4; index += 1) {
+    addMatch({
+      suffix: `ub-r1-${index + 1}`,
+      teamA: teamIds[4 + index * 2] ?? `seed:${index * 2 + 5}`,
+      teamB: teamIds[5 + index * 2] ?? `seed:${index * 2 + 6}`,
+      bracketRound: "Upper Bracket Round 1",
+      roundLabel: "淘汰赛 · 胜者组第 1 轮",
+    });
+  }
+  for (let index = 0; index < 4; index += 1) {
+    addMatch({
+      suffix: `ub-r2-${index + 1}`,
+      teamA: seedRef(index),
+      teamB: winnerRef(`ub-r1-${index + 1}`),
+      bracketRound: "Upper Bracket Round 2",
+      roundLabel: "淘汰赛 · 胜者组第 2 轮",
+    });
+  }
+  for (let index = 0; index < 2; index += 1) {
+    addMatch({
+      suffix: `ub-r3-${index + 1}`,
+      teamA: winnerRef(`ub-r2-${index * 2 + 1}`),
+      teamB: winnerRef(`ub-r2-${index * 2 + 2}`),
+      bracketRound: "Upper Bracket Round 3",
+      roundLabel: "淘汰赛 · 胜者组第 3 轮",
+    });
+  }
+  addMatch({
+    suffix: "ub-final",
+    teamA: winnerRef("ub-r3-1"),
+    teamB: winnerRef("ub-r3-2"),
+    bracketRound: "Upper Bracket Final",
+    roundLabel: "淘汰赛 · 胜者组决赛",
+    bestOf: 5,
+  });
+
+  // A team with one loss moves through the middle bracket before entering Lower Round 1.
+  for (let index = 0; index < 4; index += 1) {
+    addMatch({
+      suffix: `mb-r1-${index + 1}`,
+      teamA: loserRef(`ub-r1-${index + 1}`),
+      teamB: loserRef(`ub-r2-${index + 1}`),
+      bracketRound: "Middle Bracket Round 1",
+      roundLabel: "淘汰赛 · 中间败者组第 1 轮",
+    });
+  }
+  for (let index = 0; index < 2; index += 1) {
+    addMatch({
+      suffix: `mb-r2-${index + 1}`,
+      teamA: winnerRef(`mb-r1-${index * 2 + 1}`),
+      teamB: winnerRef(`mb-r1-${index * 2 + 2}`),
+      bracketRound: "Middle Bracket Round 2",
+      roundLabel: "淘汰赛 · 中间败者组第 2 轮",
+    });
+  }
+  for (let index = 0; index < 2; index += 1) {
+    addMatch({
+      suffix: `mb-r3-${index + 1}`,
+      teamA: winnerRef(`mb-r2-${index + 1}`),
+      teamB: loserRef(`ub-r3-${index + 1}`),
+      bracketRound: "Middle Bracket Round 3",
+      roundLabel: "淘汰赛 · 中间败者组第 3 轮",
+    });
+  }
+  addMatch({
+    suffix: "mb-r4-1",
+    teamA: winnerRef("mb-r3-1"),
+    teamB: winnerRef("mb-r3-2"),
+    bracketRound: "Middle Bracket Round 4",
+    roundLabel: "淘汰赛 · 中间败者组第 4 轮",
+  });
+  addMatch({
+    suffix: "mb-final",
+    teamA: winnerRef("mb-r4-1"),
+    teamB: loserRef("ub-final"),
+    bracketRound: "Middle Bracket Final",
+    roundLabel: "淘汰赛 · 中间败者组决赛",
+    bestOf: 5,
+  });
+
+  // The second loss sends a team to Lower Round 1; a third loss eliminates it.
+  for (let index = 0; index < 2; index += 1) {
+    addMatch({
+      suffix: `lb-r1-${index + 1}`,
+      teamA: loserRef(`mb-r1-${index * 2 + 1}`),
+      teamB: loserRef(`mb-r1-${index * 2 + 2}`),
+      bracketRound: "Lower Bracket Round 1",
+      roundLabel: "淘汰赛 · 败者组第 1 轮",
+    });
+  }
+  for (let index = 0; index < 2; index += 1) {
+    addMatch({
+      suffix: `lb-r2-${index + 1}`,
+      teamA: winnerRef(`lb-r1-${index + 1}`),
+      teamB: loserRef(`mb-r2-${index + 1}`),
+      bracketRound: "Lower Bracket Round 2",
+      roundLabel: "淘汰赛 · 败者组第 2 轮",
+    });
+  }
+  for (let index = 0; index < 2; index += 1) {
+    addMatch({
+      suffix: `lb-r3-${index + 1}`,
+      teamA: winnerRef(`lb-r2-${index + 1}`),
+      teamB: loserRef(`mb-r3-${index + 1}`),
+      bracketRound: "Lower Bracket Round 3",
+      roundLabel: "淘汰赛 · 败者组第 3 轮",
+    });
+  }
+  addMatch({
+    suffix: "lb-r4-1",
+    teamA: winnerRef("lb-r3-1"),
+    teamB: winnerRef("lb-r3-2"),
+    bracketRound: "Lower Bracket Round 4",
+    roundLabel: "淘汰赛 · 败者组第 4 轮",
+  });
+  addMatch({
+    suffix: "lb-r5-1",
+    teamA: winnerRef("lb-r4-1"),
+    teamB: loserRef("mb-r4-1"),
+    bracketRound: "Lower Bracket Round 5",
+    roundLabel: "淘汰赛 · 败者组第 5 轮",
+  });
+  addMatch({
+    suffix: "lb-final",
+    teamA: winnerRef("lb-r5-1"),
+    teamB: loserRef("mb-final"),
+    bracketRound: "Lower Bracket Final",
+    roundLabel: "淘汰赛 · 败者组决赛",
+    bestOf: 5,
+  });
+
+  return matches;
+}
+
 function internationalSwissMatches(event: EventTemplate, teams: Team[]): MatchResult[] {
   const byRegion = new Map<RegionId, string[]>((["amer", "emea", "pacific", "china"] as RegionId[]).map((region) => [region, teams.filter((team) => team.region === region).slice(0, 3).map((team) => team.id)]));
   const seeds = [
@@ -215,7 +386,10 @@ export function createSchedule(region: RegionId, teams: Team[]): { matches: Matc
     if (event.format === "group-plus-playoffs") {
       for (const group of config.groupStage?.groups ?? []) matches.push(...roundRobinMatches(event, region, group.teamIds, group.id, group.name));
     }
-    matches.push(...regionalBracketMatches(event, region, regionalTeams.map((team) => team.id)));
+    const regionalTeamIds = regionalTeams.map((team) => team.id);
+    matches.push(...(event.format === "triple-elimination"
+      ? regionalTripleEliminationMatches(event, region, regionalTeamIds)
+      : regionalBracketMatches(event, region, regionalTeamIds)));
   }
   return { matches, tournaments };
 }

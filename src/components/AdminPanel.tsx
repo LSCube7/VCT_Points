@@ -73,18 +73,60 @@ function displayParticipant(ref: string, teams: Map<string, Team>): string {
 
 const bracketRoundOrder = [
   "Opening Round",
+  "Upper Bracket Round 1",
+  "Upper Bracket Round 2",
+  "Upper Bracket Round 3",
   "Upper Bracket Quarterfinal",
   "Quarterfinal",
   "Upper Bracket Semifinal",
   "Semifinal",
+  "Upper Bracket Final",
+  "Middle Bracket Round 1",
+  "Middle Bracket Round 2",
+  "Middle Bracket Round 3",
+  "Middle Bracket Round 4",
+  "Middle Bracket Final",
   "Lower Bracket Round 1",
   "Lower Bracket Round 2",
-  "Upper Bracket Final",
+  "Lower Bracket Round 3",
+  "Lower Bracket Round 4",
+  "Lower Bracket Round 5",
   "Lower Bracket Semifinal",
   "Lower Bracket Final",
   "Grand Final",
   "Final",
 ];
+
+const bracketRoundLabels: Record<string, string> = {
+  "Opening Round": "淘汰赛首轮",
+  "Upper Bracket Round 1": "胜者组第 1 轮",
+  "Upper Bracket Round 2": "胜者组第 2 轮",
+  "Upper Bracket Round 3": "胜者组第 3 轮",
+  "Upper Bracket Quarterfinal": "胜者组四分之一决赛",
+  Quarterfinal: "四分之一决赛",
+  "Upper Bracket Semifinal": "胜者组半决赛",
+  Semifinal: "半决赛",
+  "Upper Bracket Final": "胜者组决赛",
+  "Middle Bracket Round 1": "中间败者组第 1 轮",
+  "Middle Bracket Round 2": "中间败者组第 2 轮",
+  "Middle Bracket Round 3": "中间败者组第 3 轮",
+  "Middle Bracket Round 4": "中间败者组第 4 轮",
+  "Middle Bracket Final": "中间败者组决赛",
+  "Lower Bracket Round 1": "败者组第 1 轮",
+  "Lower Bracket Round 2": "败者组第 2 轮",
+  "Lower Bracket Round 3": "败者组第 3 轮",
+  "Lower Bracket Round 4": "败者组第 4 轮",
+  "Lower Bracket Round 5": "败者组第 5 轮",
+  "Lower Bracket Semifinal": "败者组半决赛",
+  "Lower Bracket Final": "败者组决赛",
+  "Grand Final": "总决赛",
+  Final: "决赛",
+};
+
+function bracketRoundLabel(round?: string): string {
+  if (!round) return "淘汰赛";
+  return bracketRoundLabels[round] ?? round;
+}
 
 function bracketRoundRank(round: string): number {
   const index = bracketRoundOrder.findIndex((label) => round === label);
@@ -223,7 +265,7 @@ function BracketMatchCard({ match, teams, onChange }: { match: MatchResult; team
   return (
     <Card variant="outlined" sx={{ minWidth: 260, mb: 2 }}>
       <CardContent sx={{ p: 1.5, "&:last-child": { pb: 1.5 } }}>
-        <Typography variant="caption" color="text.secondary" display="block" mb={0.75}>{match.bracketRound ?? match.roundLabel ?? "淘汰赛"}</Typography>
+        <Typography variant="caption" color="text.secondary" display="block" mb={0.75}>{bracketRoundLabel(match.bracketRound ?? match.roundLabel)}</Typography>
         <Stack spacing={0.5} mb={1.25}><Stack direction="row" justifyContent="space-between" gap={1}><Typography variant="body2" fontWeight={700}>{displayParticipant(match.teamA, teams)}</Typography>{match.winner === match.teamA && <Chip size="small" color="success" label="胜" />}</Stack><Divider /><Stack direction="row" justifyContent="space-between" gap={1}><Typography variant="body2" fontWeight={700}>{displayParticipant(match.teamB, teams)}</Typography>{match.winner === match.teamB && <Chip size="small" color="success" label="胜" />}</Stack></Stack>
         <MatchControls match={match} teams={teams} onChange={(update) => onChange(match.id, update)} />
       </CardContent>
@@ -261,7 +303,7 @@ function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchR
           return (
             <Stack key={match.id} direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "center" }}>
               <Box sx={{ minWidth: { md: 250 } }}>
-                <Typography variant="body2" fontWeight={700}>{eventLabel} · {match.bracketRound ?? "首轮"}</Typography>
+                <Typography variant="body2" fontWeight={700}>{eventLabel} · {bracketRoundLabel(match.bracketRound ?? "首轮")}</Typography>
                 <Typography variant="caption" color="text.secondary">{match.id}</Typography>
               </Box>
               <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 220 } }}>
@@ -291,7 +333,7 @@ function BracketBoard({ matches, teams, onChange }: { matches: MatchResult[]; te
   const rounds = [...new Set(matches.map((match) => match.bracketRound ?? "淘汰赛"))].sort((left, right) => {
     return bracketRoundRank(left) - bracketRoundRank(right);
   });
-  return <Stack spacing={2}><FirstRoundConfiguration matches={matches} teams={[...teams.values()]} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{round}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
+  return <Stack spacing={2}><FirstRoundConfiguration matches={matches} teams={[...teams.values()]} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{bracketRoundLabel(round)}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
 }
 
 function ScheduleConfiguration({ config, teams, onChange }: { config: TournamentConfig; teams: Team[]; onChange: (config: TournamentConfig) => void }) {
@@ -312,7 +354,7 @@ function ScheduleConfiguration({ config, teams, onChange }: { config: Tournament
     <Divider />
     <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1">小组 / Swiss 分组</Typography><Typography variant="body2" color="text.secondary">当前使用多选框稳定保存队伍归属。</Typography></Box><Button startIcon={<Add />} onClick={addGroup}>新增分组</Button></Stack>
     <Grid container spacing={2}>{groups.map((group) => <Grid key={group.id} size={{ xs: 12, md: 6 }}><Paper variant="outlined" sx={{ p: 2 }}><Stack direction="row" spacing={1} alignItems="center" mb={1.5}><TextField size="small" label="分组名称" value={group.name} onChange={(event) => updateGroup(group.id, { name: event.target.value })} sx={{ flex: 1 }} /><IconButton aria-label={`删除${group.name}`} size="small" onClick={() => removeGroup(group.id)} disabled={groups.length <= 1}><DeleteOutline /></IconButton></Stack><FormControl fullWidth size="small"><InputLabel id={`${config.id}-${group.id}-teams-label`}>队伍</InputLabel><Select multiple labelId={`${config.id}-${group.id}-teams-label`} label="队伍" value={group.teamIds} onChange={(event) => updateGroup(group.id, { teamIds: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value as string[] })} renderValue={(selected) => <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(selected as string[]).map((teamId) => <Chip key={teamId} size="small" label={displayParticipant(teamId, new Map(teams.map((team) => [team.id, team])))} />)}</Stack>}>{eligibleTeams.map((team) => <MenuItem key={team.id} value={team.id}>{team.name}</MenuItem>)}</Select></FormControl></Paper></Grid>)}</Grid>
-    <Alert severity="info" icon={<Settings />}>淘汰赛图会根据上方的起始轮次和队伍引用实时生成；Masters Santiago / London 固定为 12 队、8 队 Swiss、8 队双败淘汰。</Alert>
+    <Alert severity="info" icon={<Settings />}>{config.format === "triple-elimination" ? "Kickoff 使用 12 队三败淘汰：赛程图会明确分为胜者组、中间败者组和败者组，首轮八支队伍可在下方手动配置。" : "淘汰赛图会根据上方的起始轮次和队伍引用实时生成；Masters Santiago / London 固定为 12 队、8 队 Swiss、8 队双败淘汰。"}</Alert>
   </Stack>;
 }
 

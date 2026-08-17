@@ -26,6 +26,52 @@ describe("2026 schedule templates", () => {
       expect(new Set(matches.map((match) => match.region))).toEqual(new Set(["amer", "emea", "pacific", "china"]));
     }
   });
+
+  it("creates a complete 12-team Kickoff triple-elimination graph", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const tournament = schedule.tournaments.find((item) => item.id === "kickoff-amer");
+    const matches = schedule.matches.filter((match) => match.eventId === "kickoff" && match.region === "amer");
+    const roundCounts = new Map<string, number>();
+    for (const match of matches) roundCounts.set(match.bracketRound ?? "", (roundCounts.get(match.bracketRound ?? "") ?? 0) + 1);
+
+    expect(tournament?.bracket?.type).toBe("triple-elimination");
+    expect(tournament?.bracket?.teamRefs).toHaveLength(12);
+    expect(matches).toHaveLength(30);
+    expect(roundCounts).toEqual(new Map([
+      ["Upper Bracket Round 1", 4],
+      ["Upper Bracket Round 2", 4],
+      ["Upper Bracket Round 3", 2],
+      ["Upper Bracket Final", 1],
+      ["Middle Bracket Round 1", 4],
+      ["Middle Bracket Round 2", 2],
+      ["Middle Bracket Round 3", 2],
+      ["Middle Bracket Round 4", 1],
+      ["Middle Bracket Final", 1],
+      ["Lower Bracket Round 1", 2],
+      ["Lower Bracket Round 2", 2],
+      ["Lower Bracket Round 3", 2],
+      ["Lower Bracket Round 4", 1],
+      ["Lower Bracket Round 5", 1],
+      ["Lower Bracket Final", 1],
+    ]));
+
+    const firstRoundTeams = matches
+      .filter((match) => match.bracketRound === "Upper Bracket Round 1")
+      .flatMap((match) => [match.teamA, match.teamB]);
+    expect(firstRoundTeams.sort()).toEqual(Array.from({ length: 8 }, (_, index) => `amer-team-${index + 5}`).sort());
+    expect(matches.filter((match) => match.bracketRound?.endsWith("Final"))).toHaveLength(3);
+    expect(matches.filter((match) => match.bracketRound?.endsWith("Final")).every((match) => match.bestOf === 5)).toBe(true);
+    expect(matches.some((match) => match.bracketRound === "Grand Final")).toBe(false);
+
+    const matchIds = new Set(matches.map((match) => match.id));
+    for (const match of matches) {
+      for (const participant of [match.teamA, match.teamB]) {
+        if (participant.startsWith("winner:") || participant.startsWith("loser:")) {
+          expect(matchIds.has(participant.slice(participant.indexOf(":") + 1))).toBe(true);
+        }
+      }
+    }
+  });
 });
 
 describe("map score validation", () => {
