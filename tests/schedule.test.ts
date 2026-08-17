@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allDemoTeams } from "../src/lib/data/demo";
-import { createFullSchedule } from "../src/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule } from "../src/lib/schedule";
 import { validateMatchResult } from "../src/lib/validation";
 
 describe("2026 schedule templates", () => {
@@ -58,7 +58,8 @@ describe("2026 schedule templates", () => {
     const firstRoundTeams = matches
       .filter((match) => match.bracketRound === "Upper Bracket Round 1")
       .flatMap((match) => [match.teamA, match.teamB]);
-    expect(firstRoundTeams.sort()).toEqual(Array.from({ length: 8 }, (_, index) => `amer-team-${index + 5}`).sort());
+    expect(firstRoundTeams.sort()).toEqual(Array.from({ length: 8 }, (_, index) => `seed:${index + 5}`).sort());
+    expect(matches.filter((match) => match.bracketRound === "Upper Bracket Round 2").map((match) => match.teamA).sort()).toEqual(Array.from({ length: 4 }, (_, index) => `seed:${index + 1}`).sort());
     expect(matches.filter((match) => match.bracketRound?.endsWith("Final"))).toHaveLength(3);
     expect(matches.filter((match) => match.bracketRound?.endsWith("Final")).every((match) => match.bestOf === 5)).toBe(true);
     expect(matches.some((match) => match.bracketRound === "Grand Final")).toBe(false);
@@ -71,6 +72,27 @@ describe("2026 schedule templates", () => {
         }
       }
     }
+  });
+
+  it("applies manually configured seed slots without using team list order", () => {
+    const teams = allDemoTeams();
+    const schedule = createFullSchedule(teams);
+    const tournament = schedule.tournaments.find((item) => item.id === "kickoff-amer");
+    if (!tournament?.bracket) throw new Error("test fixture missing Kickoff bracket");
+    const configured = {
+      ...tournament,
+      bracket: {
+        ...tournament.bracket,
+        teamRefs: ["amer-team-12", "amer-team-3", "amer-team-8", "amer-team-1", "amer-team-7", "amer-team-2", "amer-team-11", "amer-team-4", "amer-team-10", "amer-team-5", "amer-team-9", "amer-team-6"],
+      },
+    };
+    const updated = applyTripleEliminationSeedOrder(schedule.matches, configured);
+    const opening = updated.find((match) => match.id === "amer-kickoff-ub-r1-1");
+    const upperRoundTwo = updated.find((match) => match.id === "amer-kickoff-ub-r2-1");
+    expect(opening?.teamA).toBe("amer-team-7");
+    expect(opening?.teamB).toBe("amer-team-2");
+    expect(upperRoundTwo?.teamA).toBe("amer-team-12");
+    expect(upperRoundTwo?.teamB).toBe("winner:amer-kickoff-ub-r1-1");
   });
 });
 

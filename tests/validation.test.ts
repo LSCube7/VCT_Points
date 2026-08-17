@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validateMatchResult } from "../src/lib/validation";
+import { validateMatchResult, validateTournamentConfig } from "../src/lib/validation";
 
 const base = {
   id: "m1",
@@ -26,5 +26,25 @@ describe("match validation", () => {
 
   it("allows scheduled matches without map data", () => {
     expect(validateMatchResult({ ...base, status: "scheduled", winner: undefined, maps: [] }).success).toBe(true);
+  });
+});
+
+describe("tournament configuration validation", () => {
+  const baseConfig = {
+    id: "kickoff-amer",
+    eventId: "kickoff",
+    name: "Kickoff",
+    scope: "regional" as const,
+    format: "triple-elimination" as const,
+    bracket: { type: "triple-elimination" as const, startRound: "quarterfinals" as const, teamRefs: Array.from({ length: 12 }, (_, index) => `amer-team-${index + 1}`) },
+  };
+
+  it("requires every triple-elimination seed slot to be manually assigned", () => {
+    expect(validateTournamentConfig({ ...baseConfig, bracket: { ...baseConfig.bracket, teamRefs: ["seed:1"] } }).success).toBe(false);
+    expect(validateTournamentConfig({ ...baseConfig, bracket: { ...baseConfig.bracket, teamRefs: ["seed:1", ...baseConfig.bracket.teamRefs.slice(1)] } }).success).toBe(false);
+  });
+
+  it("rejects duplicate triple-elimination seed slots", () => {
+    expect(validateTournamentConfig({ ...baseConfig, bracket: { ...baseConfig.bracket, teamRefs: ["amer-team-1", ...baseConfig.bracket.teamRefs.slice(1, 11), "amer-team-1"] } }).success).toBe(false);
   });
 });

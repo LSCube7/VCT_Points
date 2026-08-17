@@ -48,7 +48,7 @@ import {
 import { allDemoTeams, demoSimulation } from "@/lib/data/demo";
 import { runRegionWorker } from "@/lib/engine/worker-client";
 import { getMessages } from "@/lib/i18n/messages";
-import { createFullSchedule, EVENT_TEMPLATES, eventTemplate, MAP_POOL } from "@/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, MAP_POOL } from "@/lib/schedule";
 import { inspectKickoffScheduleMigration, migrateKickoffSchedule, type KickoffScheduleMigrationPreview } from "@/lib/schedule-migration";
 import type { RegionAnalysis } from "@/lib/types";
 import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
@@ -68,7 +68,7 @@ function displayParticipant(ref: string, teams: Map<string, Team>): string {
   if (team) return team.shortName || team.name;
   if (ref.startsWith("winner:")) return `胜者 · ${ref.slice("winner:".length)}`;
   if (ref.startsWith("loser:")) return `败者 · ${ref.slice("loser:".length)}`;
-  if (ref.startsWith("seed:")) return `种子 · ${ref.slice("seed:".length)}`;
+  if (ref.startsWith("seed:")) return `待配置种子 ${ref.slice("seed:".length)}`;
   return ref;
 }
 
@@ -337,11 +337,13 @@ function BracketBoard({ matches, teams, onChange }: { matches: MatchResult[]; te
   return <Stack spacing={2}><FirstRoundConfiguration matches={matches} teams={[...teams.values()]} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{bracketRoundLabel(round)}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
 }
 
-function TripleEliminationConfiguration({ config, teams, matches, migration, onMigrate, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onMigrate?: () => void; onOpenMatches?: () => void }) {
+function TripleEliminationConfiguration({ config, teams, matches, migration, onChange, onMigrate, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onChange: (config: TournamentConfig) => void; onMigrate?: () => void; onOpenMatches?: () => void }) {
   const eligibleTeams = teams.filter((team) => config.scope === "international" || config.id.endsWith(team.region));
   const configuredRefs = config.bracket?.teamRefs ?? [];
-  const teamRefs = [...new Set([...configuredRefs, ...eligibleTeams.map((team) => team.id)])].slice(0, 12);
+  const seedSlots = Array.from({ length: 12 }, (_, index) => configuredRefs[index]?.startsWith("seed:") ? "" : configuredRefs[index] ?? "");
+  const teamRefs = seedSlots.map((teamId, index) => teamId || `seed:${index + 1}`);
   const teamById = new Map(teams.map((team) => [team.id, team]));
+  const selectedTeamIds = new Set(seedSlots.filter(Boolean));
   const region = eligibleTeams[0]?.region;
   const currentBracketMatches = matches.filter((match) => match.eventId === config.eventId && match.region === region && match.phase === "playoffs");
   const hasLegacySchedule = currentBracketMatches.length > 0 && (currentBracketMatches.length !== 30 || !currentBracketMatches.some((match) => match.bracketRound === "Middle Bracket Round 1"));
@@ -351,14 +353,25 @@ function TripleEliminationConfiguration({ config, teams, matches, migration, onM
     { title: "中间败者组", detail: "4 场第一轮 · 2 场第二轮 · 2 场第三轮 · 1 场第四轮 · 1 场决赛", note: "胜者组首次失利后进入" },
     { title: "败者组", detail: "2 场第一轮 · 2 场第二轮 · 2 场第三轮 · 1 场第四轮 · 1 场第五轮 · 1 场决赛", note: "第二次失利后进入，第三次失利淘汰" },
   ];
+  function updateSeedSlot(index: number, teamId: string) {
+    const nextRefs = seedSlots.map((current, slotIndex) => slotIndex === index ? teamId || `seed:${slotIndex + 1}` : current || `seed:${slotIndex + 1}`);
+    onChange({ ...config, bracket: { type: "triple-elimination", startRound: config.bracket?.startRound ?? "quarterfinals", teamRefs: nextRefs } });
+  }
   return <Stack spacing={2}>
     <Alert severity="info" icon={<Settings />}>Kickoff 的赛制结构固定为 12 队三败淘汰。这里展示轮次和种子入口；实际首轮双方请到“赛果录入 → 淘汰赛图”中配置，避免配置页和已录入赛果互相覆盖。</Alert>
     {hasLegacySchedule && <Alert severity="warning">当前草稿仍载入旧版 Kickoff 对阵图（检测到 {currentBracketMatches.length} 场淘汰赛）。本页不会自动覆盖旧赛果；请先确认迁移后，再在赛果录入页使用新版胜者组 / 中间败者组 / 败者组结构。</Alert>}
     {isLegacyRegion && migration.blockedRegions.length > 0 && <Alert severity="error">检测到旧版后续轮次已有赛果，自动迁移已阻止（受影响赛区：{migration.blockedRegions.join("、")}）。请先保留原草稿，并手动将这些结果按新版对阵重新录入。</Alert>}
     <Grid container spacing={2}>{sections.map((section) => <Grid key={section.title} size={{ xs: 12, md: 4 }}><Card variant="outlined" sx={{ height: "100%" }}><CardContent><Typography variant="subtitle1" fontWeight={700}>{section.title}</Typography><Typography variant="body2" sx={{ mt: 1 }}>{section.detail}</Typography><Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 1 }}>{section.note}</Typography></CardContent></Card></Grid>)}</Grid>
     <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="subtitle1" fontWeight={700}>种子入口</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5 }}>前四个种子轮空到胜者组第 2 轮，其余八队组成胜者组第 1 轮的四场对阵。</Typography>
+      <Typography variant="subtitle1" fontWeight={700}>手动配置种子顺位</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5 }}>队伍列表顺序不代表种子顺位。请手动填写 12 个入口：前四个进入胜者组第 2 轮，后八个组成胜者组第 1 轮；同一队伍不能重复选择。</Typography>
+      <Grid container spacing={1.5} sx={{ mb: 2 }}>
+        {seedSlots.map((currentTeamId, index) => {
+          const label = index < 4 ? `胜者组第 2 轮种子 ${index + 1}` : `胜者组第 1 轮队伍 ${index - 3}`;
+          const options = eligibleTeams.filter((team) => !selectedTeamIds.has(team.id) || team.id === currentTeamId);
+          return <Grid key={`${config.id}-seed-slot-${index + 1}`} size={{ xs: 12, sm: 6, md: 3 }}><FormControl fullWidth size="small"><InputLabel id={`${config.id}-seed-slot-${index + 1}-label`}>{label}</InputLabel><Select labelId={`${config.id}-seed-slot-${index + 1}-label`} label={label} value={currentTeamId} onChange={(event) => updateSeedSlot(index, event.target.value)}><MenuItem value="">未配置</MenuItem>{options.map((team) => <MenuItem key={team.id} value={team.id}>{team.name}</MenuItem>)}{currentTeamId && !teamById.has(currentTeamId) && <MenuItem value={currentTeamId}>{currentTeamId}</MenuItem>}</Select></FormControl></Grid>;
+        })}
+      </Grid>
       <Stack spacing={1.5}>
         <Box><Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>胜者组第 2 轮 · 轮空种子</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{teamRefs.slice(0, 4).map((teamId) => <Chip key={teamId} size="small" label={displayParticipant(teamId, teamById)} />)}</Stack></Box>
         <Box><Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>胜者组第 1 轮 · 首轮队伍</Typography><Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap>{teamRefs.slice(4, 12).map((teamId) => <Chip key={teamId} size="small" variant="outlined" label={displayParticipant(teamId, teamById)} />)}</Stack></Box>
@@ -387,7 +400,7 @@ function ScheduleConfiguration({ config, teams, matches, migration, onMigrate, o
   }
   return <Stack spacing={2}>
     <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}><Box sx={{ flex: 1 }}><Typography variant="h6">{config.name}</Typography><Typography variant="body2" color="text.secondary">{isTripleElimination ? "赛区赛事：12 队三败淘汰，胜者组 / 中间败者组 / 败者组固定衔接" : config.scope === "international" ? "全球赛事：四赛区各 3 队，8 队 Swiss 晋级 8 队淘汰赛" : "赛区赛事：可视化配置小组分组与淘汰赛入口"}</Typography></Box><FormControl size="small" sx={{ minWidth: 190 }} disabled><InputLabel id={`${config.id}-format-label`}>赛事格式</InputLabel><Select labelId={`${config.id}-format-label`} label="赛事格式" value={config.format}><MenuItem value="triple-elimination">三败淘汰</MenuItem><MenuItem value="group-plus-playoffs">小组赛 + 淘汰赛</MenuItem><MenuItem value="swiss-plus-playoffs">Swiss + 淘汰赛</MenuItem></Select></FormControl>{isTripleElimination ? <TextField size="small" sx={{ minWidth: 260 }} label="淘汰赛起始" value="固定：胜者组第 1 轮（前四种子第 2 轮进入）" disabled /> : <FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id={`${config.id}-start-label`}>淘汰赛起始</InputLabel><Select labelId={`${config.id}-start-label`} label="淘汰赛起始" value={config.bracket?.startRound ?? "quarterfinals"} onChange={(event) => onChange({ ...config, bracket: { type: config.bracket?.type ?? "double-elimination", teamRefs: config.bracket?.teamRefs ?? [], startRound: event.target.value as "quarterfinals" | "semifinals" } })}><MenuItem value="quarterfinals">四分之一决赛</MenuItem><MenuItem value="semifinals">半决赛</MenuItem></Select></FormControl>}</Stack>
-    {isTripleElimination ? <TripleEliminationConfiguration config={config} teams={teams} matches={matches} migration={migration} onMigrate={onMigrate} onOpenMatches={onOpenMatches} /> : <>
+    {isTripleElimination ? <TripleEliminationConfiguration config={config} teams={teams} matches={matches} migration={migration} onChange={onChange} onMigrate={onMigrate} onOpenMatches={onOpenMatches} /> : <>
       <Divider />
       <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1">小组 / Swiss 分组</Typography><Typography variant="body2" color="text.secondary">当前使用多选框保存队伍归属；不会覆盖已经录入的比赛结果。</Typography></Box><Button startIcon={<Add />} onClick={addGroup}>新增分组</Button></Stack>
       <Grid container spacing={2}>{groups.map((group) => <Grid key={group.id} size={{ xs: 12, md: 6 }}><Paper variant="outlined" sx={{ p: 2 }}><Stack direction="row" spacing={1} alignItems="center" mb={1.5}><TextField size="small" label="分组名称" value={group.name} onChange={(event) => updateGroup(group.id, { name: event.target.value })} sx={{ flex: 1 }} /><IconButton aria-label={`删除${group.name}`} size="small" onClick={() => removeGroup(group.id)} disabled={groups.length <= 1}><DeleteOutline /></IconButton></Stack><FormControl fullWidth size="small"><InputLabel id={`${config.id}-${group.id}-teams-label`}>队伍</InputLabel><Select multiple labelId={`${config.id}-${group.id}-teams-label`} label="队伍" value={group.teamIds} onChange={(event) => updateGroup(group.id, { teamIds: typeof event.target.value === "string" ? event.target.value.split(",") : event.target.value as string[] })} renderValue={(selected) => <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>{(selected as string[]).map((teamId) => <Chip key={teamId} size="small" label={displayParticipant(teamId, new Map(teams.map((team) => [team.id, team])))} />)}</Stack>}>{eligibleTeams.map((team) => <MenuItem key={team.id} value={team.id}>{team.name}</MenuItem>)}</Select></FormControl></Paper></Grid>)}</Grid>
@@ -473,8 +486,32 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     markDraftChanged();
   }
   function updateTournament(config: TournamentConfig) {
+    const previous = tournaments.find((item) => item.id === config.id);
+    const previousRefs = previous?.bracket?.teamRefs ?? [];
+    const nextRefs = config.bracket?.teamRefs ?? [];
+    const seedOrderChanged = previous?.format === "triple-elimination" && config.format === "triple-elimination" && JSON.stringify(previousRefs) !== JSON.stringify(nextRefs);
+    let nextMatches = matches;
+    let clearedResults = false;
+    if (seedOrderChanged) {
+      const seedRegion = (["amer", "emea", "pacific", "china"] as RegionId[]).find((item) => config.id === `${config.eventId}-${item}`);
+      const regionMatches = seedRegion ? matches.filter((match) => match.eventId === config.eventId && match.region === seedRegion && match.phase === "playoffs") : [];
+      const legacySchedule = regionMatches.length > 0 && (regionMatches.length !== 30 || !regionMatches.some((match) => match.bracketRound === "Middle Bracket Round 1"));
+      if (legacySchedule) {
+        setMessage({ severity: "error", text: "请先点击“迁移全部旧版 Kickoff 赛程”，再配置种子顺位。" });
+        return;
+      }
+      const hasResults = regionMatches.some((match) => match.status !== "scheduled");
+      if (hasResults && typeof window !== "undefined" && !window.confirm("修改种子顺位会清空该赛区 Kickoff 淘汰赛的已有赛果，以避免沿用错误的对阵结果。是否继续？")) return;
+      nextMatches = applyTripleEliminationSeedOrder(matches, config).map((match) => {
+        if (!seedRegion || match.eventId !== config.eventId || match.region !== seedRegion || match.phase !== "playoffs" || !hasResults) return match;
+        return { ...match, status: "scheduled", winner: undefined, maps: [], playedAt: undefined, notes: undefined };
+      });
+      clearedResults = hasResults;
+    }
     setTournaments((current) => current.map((item) => item.id === config.id ? config : item));
+    if (nextMatches !== matches) setMatches(nextMatches);
     markDraftChanged();
+    if (clearedResults) setMessage({ severity: "info", text: "种子顺位已更新，该赛区 Kickoff 淘汰赛旧赛果已清空，请重新录入并保存草稿。" });
   }
   function updateTeams(nextTeams: Team[]) {
     setTeams(nextTeams);

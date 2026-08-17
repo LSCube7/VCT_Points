@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { TournamentConfig } from "./types";
 
 export const mapScoreSchema = z.object({
   map: z.string().min(1).max(32),
@@ -68,6 +69,15 @@ export const draftPayloadSchema = z.object({
   teams: z.array(teamSchema).default([]),
   tournaments: z.array(tournamentConfigSchema).default([]),
 });
+
+export function validateTournamentConfig(config: TournamentConfig) {
+  if (config.format !== "triple-elimination") return { success: true as const };
+  const refs = config.bracket?.teamRefs ?? [];
+  if (refs.length !== 12) return { success: false as const, error: new Error("三败淘汰必须配置 12 个种子入口") };
+  if (refs.some((ref) => ref.startsWith("seed:"))) return { success: false as const, error: new Error("三败淘汰的 12 个种子入口必须手动选择队伍") };
+  if (new Set(refs).size !== refs.length) return { success: false as const, error: new Error("三败淘汰的种子入口不能重复选择队伍") };
+  return { success: true as const };
+}
 
 export function validateMatchResult(value: unknown) {
   const result = matchResultSchema.safeParse(value);

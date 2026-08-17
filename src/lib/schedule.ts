@@ -53,6 +53,10 @@ function bracketConfig(type: BracketConfig["type"], teamRefs: string[]): Bracket
   return { type, startRound: "quarterfinals", teamRefs };
 }
 
+function tripleSeedSlots(teamRefs: string[] = []): string[] {
+  return Array.from({ length: 12 }, (_, index) => teamRefs[index] || `seed:${index + 1}`);
+}
+
 export function createTournamentConfig(template: EventTemplate, teams: Team[], region?: RegionId): TournamentConfig {
   const scope = template.scope;
   const teamIds = scope === "international"
@@ -72,7 +76,7 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
       ...bracketConfig(template.format === "triple-elimination" ? "triple-elimination" : "double-elimination", template.format === "swiss-plus-playoffs" ? [
         ...teams.filter((team) => team.id.endsWith("-team-1")).map((team) => `seed:${team.id}`),
         ...Array.from({ length: 4 }, (_, index) => `winner:${template.id}-swiss-${index + 1}`),
-      ] : template.format === "triple-elimination" ? teamIds.slice(0, 12) : teamIds.slice(0, 8)),
+      ] : template.format === "triple-elimination" ? tripleSeedSlots() : teamIds.slice(0, 8)),
     },
   };
 }
@@ -155,13 +159,14 @@ function regionalBracketMatches(event: EventTemplate, region: RegionId, teamIds:
   return matches;
 }
 
-function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId, teamIds: string[]): MatchResult[] {
+function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId, teamRefs: string[]): MatchResult[] {
   const prefix = `${region}-${event.id}`;
   const matches: MatchResult[] = [];
   const matchId = (suffix: string) => `${prefix}-${suffix}`;
   const winnerRef = (suffix: string) => `winner:${matchId(suffix)}`;
   const loserRef = (suffix: string) => `loser:${matchId(suffix)}`;
-  const seedRef = (index: number) => teamIds[index] ?? `seed:${index + 1}`;
+  const seedSlots = tripleSeedSlots(teamRefs);
+  const seedRef = (index: number) => seedSlots[index];
   const addMatch = ({
     suffix,
     teamA,
@@ -195,8 +200,8 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   for (let index = 0; index < 4; index += 1) {
     addMatch({
       suffix: `ub-r1-${index + 1}`,
-      teamA: teamIds[4 + index * 2] ?? `seed:${index * 2 + 5}`,
-      teamB: teamIds[5 + index * 2] ?? `seed:${index * 2 + 6}`,
+      teamA: seedSlots[4 + index * 2],
+      teamB: seedSlots[5 + index * 2],
       bracketRound: "Upper Bracket Round 1",
       roundLabel: "淘汰赛 · 胜者组第 1 轮",
     });
@@ -326,6 +331,23 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   return matches;
 }
 
+export function applyTripleEliminationSeedOrder(matches: MatchResult[], config: TournamentConfig): MatchResult[] {
+  if (config.format !== "triple-elimination" || !config.bracket) return matches;
+  const region = (["amer", "emea", "pacific", "china"] as RegionId[]).find((item) => config.id === `${config.eventId}-${item}`);
+  if (!region) return matches;
+  const prefix = `${region}-${config.eventId}`;
+  const seedSlots = tripleSeedSlots(config.bracket.teamRefs);
+  const slotUpdates = new Map<string, Pick<MatchResult, "teamA" | "teamB">>();
+  for (let index = 0; index < 4; index += 1) {
+    slotUpdates.set(`${prefix}-ub-r1-${index + 1}`, { teamA: seedSlots[4 + index * 2], teamB: seedSlots[5 + index * 2] });
+    slotUpdates.set(`${prefix}-ub-r2-${index + 1}`, { teamA: seedSlots[index], teamB: `winner:${prefix}-ub-r1-${index + 1}` });
+  }
+  return matches.map((match) => {
+    const update = slotUpdates.get(match.id);
+    return update ? { ...match, ...update } : match;
+  });
+}
+
 function internationalSwissMatches(event: EventTemplate, teams: Team[]): MatchResult[] {
   const byRegion = new Map<RegionId, string[]>((["amer", "emea", "pacific", "china"] as RegionId[]).map((region) => [region, teams.filter((team) => team.region === region).slice(0, 3).map((team) => team.id)]));
   const seeds = [
@@ -388,7 +410,7 @@ export function createSchedule(region: RegionId, teams: Team[]): { matches: Matc
     }
     const regionalTeamIds = regionalTeams.map((team) => team.id);
     matches.push(...(event.format === "triple-elimination"
-      ? regionalTripleEliminationMatches(event, region, regionalTeamIds)
+      ? regionalTripleEliminationMatches(event, region, config.bracket?.teamRefs ?? [])
       : regionalBracketMatches(event, region, regionalTeamIds)));
   }
   return { matches, tournaments };

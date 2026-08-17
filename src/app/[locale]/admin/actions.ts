@@ -5,7 +5,7 @@ import { and, eq, desc } from "drizzle-orm";
 import { draftVersions } from "../../../../db/schema";
 import { getDb, getSql } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
-import { draftPayloadSchema, validateMatchResult } from "@/lib/validation";
+import { draftPayloadSchema, validateMatchResult, validateTournamentConfig } from "@/lib/validation";
 import type { DraftPayload } from "@/lib/types";
 
 export interface AdminActionResult {
@@ -58,6 +58,10 @@ export async function validateDraft(payload: unknown): Promise<AdminActionResult
   const parsed = draftPayloadSchema.safeParse(payload);
   if (!parsed.success) {
     return { ok: false, code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "草稿数据格式错误" };
+  }
+  const invalidTournament = parsed.data.tournaments.map((tournament) => ({ tournament, result: validateTournamentConfig(tournament) })).find(({ result }) => !result.success);
+  if (invalidTournament && !invalidTournament.result.success) {
+    return { ok: false, code: "VALIDATION_ERROR", message: `赛事 ${invalidTournament.tournament.name}：${invalidTournament.result.error.message}` };
   }
   const invalidMatch = parsed.data.matches.map((match) => ({ match, result: validateMatchResult(match) })).find(({ result }) => !result.success);
   if (!invalidMatch) return { ok: true, revision: parsed.data.revision };
