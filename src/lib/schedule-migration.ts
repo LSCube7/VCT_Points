@@ -13,8 +13,30 @@ function regionKickoffMatches(matches: MatchResult[], region: RegionId): MatchRe
   return matches.filter((match) => match.eventId === "kickoff" && match.region === region && match.phase === "playoffs");
 }
 
+function isKickoffFirstRound(match: MatchResult): boolean {
+  return match.bracketRound === "Opening Round" || match.bracketRound === "Upper Bracket Round 1";
+}
+
 function isCurrentTripleSchedule(matches: MatchResult[]): boolean {
-  return matches.length === 30 && matches.some((match) => match.bracketRound === "Middle Bracket Round 1");
+  if (matches.length !== 30 || !matches.some((match) => match.bracketRound === "Middle Bracket Round 1")) return false;
+  const firstUpperRoundMatch = matches.find((match) => match.id.endsWith("-ub-r1-1"));
+  if (!firstUpperRoundMatch) return false;
+  const prefix = firstUpperRoundMatch.id.slice(0, -"-ub-r1-1".length);
+  const byId = new Map(matches.map((match) => [match.id, match]));
+  const expectedParticipants: Record<string, [string, string]> = {
+    "mb-r1-1": [`loser:${prefix}-ub-r1-1`, `loser:${prefix}-ub-r2-4`],
+    "mb-r1-4": [`loser:${prefix}-ub-r1-4`, `loser:${prefix}-ub-r2-1`],
+    "mb-r3-1": [`loser:${prefix}-ub-r3-1`, `winner:${prefix}-mb-r2-1`],
+    "mb-final": [`loser:${prefix}-ub-final`, `winner:${prefix}-mb-r4-1`],
+    "lb-r2-1": [`loser:${prefix}-mb-r2-2`, `winner:${prefix}-lb-r1-1`],
+    "lb-r3-2": [`loser:${prefix}-mb-r3-2`, `winner:${prefix}-lb-r2-2`],
+    "lb-r5-1": [`loser:${prefix}-mb-r4-1`, `winner:${prefix}-lb-r4-1`],
+    "lb-final": [`loser:${prefix}-mb-final`, `winner:${prefix}-lb-r5-1`],
+  };
+  return Object.entries(expectedParticipants).every(([suffix, participants]) => {
+    const match = byId.get(`${prefix}-${suffix}`);
+    return match?.teamA === participants[0] && match.teamB === participants[1];
+  });
 }
 
 function firstRoundNumber(match: MatchResult): number {
@@ -28,7 +50,7 @@ export function inspectKickoffScheduleMigration(matches: MatchResult[]): Kickoff
     return kickoffMatches.length > 0 && !isCurrentTripleSchedule(kickoffMatches);
   });
   const blockedRegions = legacyRegions.filter((region) => regionKickoffMatches(matches, region)
-    .filter((match) => match.bracketRound !== "Opening Round")
+    .filter((match) => !isKickoffFirstRound(match))
     .some((match) => match.status !== "scheduled"));
   return { legacyRegions, blockedRegions, canMigrate: legacyRegions.length > 0 && blockedRegions.length === 0 };
 }
@@ -49,7 +71,7 @@ function copyOpeningRoundResult(source: MatchResult, target: MatchResult): Match
 function migrateRegionMatches(matches: MatchResult[], generatedMatches: MatchResult[], region: RegionId): MatchResult[] {
   const legacyMatches = regionKickoffMatches(matches, region);
   const legacyOpening = legacyMatches
-    .filter((match) => match.bracketRound === "Opening Round")
+    .filter(isKickoffFirstRound)
     .sort((left, right) => firstRoundNumber(left) - firstRoundNumber(right));
   const generatedOpening = generatedMatches
     .filter((match) => match.bracketRound === "Upper Bracket Round 1")

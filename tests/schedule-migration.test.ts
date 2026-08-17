@@ -62,4 +62,41 @@ describe("Kickoff schedule migration", () => {
     expect(preview.blockedRegions).toEqual(["amer"]);
     expect(() => migrateKickoffSchedule(payload)).toThrow("KICKOFF_MIGRATION_HAS_RESULTS:amer");
   });
+
+  it("migrates the previous triple-elimination wiring while keeping upper round one results", () => {
+    const teams = allDemoTeams();
+    const generated = createFullSchedule(teams);
+    const oldParticipants = new Map<string, [string, string]>([
+      ["amer-kickoff-mb-r1-1", ["loser:amer-kickoff-ub-r1-1", "loser:amer-kickoff-ub-r2-1"]],
+      ["amer-kickoff-mb-r1-4", ["loser:amer-kickoff-ub-r1-4", "loser:amer-kickoff-ub-r2-4"]],
+      ["amer-kickoff-mb-r3-1", ["winner:amer-kickoff-mb-r2-1", "loser:amer-kickoff-ub-r3-1"]],
+      ["amer-kickoff-mb-final", ["winner:amer-kickoff-mb-r4-1", "loser:amer-kickoff-ub-final"]],
+      ["amer-kickoff-lb-r2-1", ["winner:amer-kickoff-lb-r1-1", "loser:amer-kickoff-mb-r2-1"]],
+      ["amer-kickoff-lb-r3-2", ["winner:amer-kickoff-lb-r2-2", "loser:amer-kickoff-mb-r3-2"]],
+      ["amer-kickoff-lb-r5-1", ["winner:amer-kickoff-lb-r4-1", "loser:amer-kickoff-mb-r4-1"]],
+      ["amer-kickoff-lb-final", ["winner:amer-kickoff-lb-r5-1", "loser:amer-kickoff-mb-final"]],
+    ]);
+    const matches = generated.matches.map((match) => {
+      const participants = oldParticipants.get(match.id);
+      return participants ? { ...match, teamA: participants[0], teamB: participants[1] } : match;
+    });
+    const opening = matches.find((match) => match.id === "amer-kickoff-ub-r1-1");
+    if (!opening) throw new Error("test fixture missing upper round one match");
+    opening.status = "completed";
+    opening.winner = opening.teamA;
+    opening.maps = [{ map: "Abyss", teamARounds: 13, teamBRounds: 9 }];
+
+    const payload = { teams, matches, tournaments: generated.tournaments };
+    const preview = inspectKickoffScheduleMigration(matches);
+    expect(preview.legacyRegions).toContain("amer");
+    expect(preview.blockedRegions).toEqual([]);
+
+    const migrated = migrateKickoffSchedule(payload);
+    const migratedOpening = migrated.matches.find((match) => match.id === "amer-kickoff-ub-r1-1");
+    expect(migratedOpening).toMatchObject({ status: "completed", winner: opening.winner });
+    expect(migrated.matches.find((match) => match.id === "amer-kickoff-mb-r1-1")).toMatchObject({
+      teamA: "loser:amer-kickoff-ub-r1-1",
+      teamB: "loser:amer-kickoff-ub-r2-4",
+    });
+  });
 });

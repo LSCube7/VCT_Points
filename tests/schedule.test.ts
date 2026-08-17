@@ -72,6 +72,44 @@ describe("2026 schedule templates", () => {
         }
       }
     }
+
+    const participants = (id: string) => {
+      const match = matches.find((candidate) => candidate.id === id);
+      if (!match) throw new Error(`missing match ${id}`);
+      return [match.teamA, match.teamB];
+    };
+    expect(participants("amer-kickoff-mb-r1-1")).toEqual([
+      "loser:amer-kickoff-ub-r1-1",
+      "loser:amer-kickoff-ub-r2-4",
+    ]);
+    expect(participants("amer-kickoff-mb-r1-4")).toEqual([
+      "loser:amer-kickoff-ub-r1-4",
+      "loser:amer-kickoff-ub-r2-1",
+    ]);
+    expect(participants("amer-kickoff-mb-r3-1")).toEqual([
+      "loser:amer-kickoff-ub-r3-1",
+      "winner:amer-kickoff-mb-r2-1",
+    ]);
+    expect(participants("amer-kickoff-mb-final")).toEqual([
+      "loser:amer-kickoff-ub-final",
+      "winner:amer-kickoff-mb-r4-1",
+    ]);
+    expect(participants("amer-kickoff-lb-r2-1")).toEqual([
+      "loser:amer-kickoff-mb-r2-2",
+      "winner:amer-kickoff-lb-r1-1",
+    ]);
+    expect(participants("amer-kickoff-lb-r3-2")).toEqual([
+      "loser:amer-kickoff-mb-r3-2",
+      "winner:amer-kickoff-lb-r2-2",
+    ]);
+    expect(participants("amer-kickoff-lb-r5-1")).toEqual([
+      "loser:amer-kickoff-mb-r4-1",
+      "winner:amer-kickoff-lb-r4-1",
+    ]);
+    expect(participants("amer-kickoff-lb-final")).toEqual([
+      "loser:amer-kickoff-mb-final",
+      "winner:amer-kickoff-lb-r5-1",
+    ]);
   });
 
   it("applies manually configured seed slots without using team list order", () => {

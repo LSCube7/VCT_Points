@@ -284,11 +284,13 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   });
 
   // A team with one loss moves through the middle bracket before entering Lower Round 1.
+  // The UB R2 losers are crossed into the opposite MB R1 slot, matching the
+  // fixed bracket lines (R1-1 vs R2-4, R1-2 vs R2-3, ...).
   for (let index = 0; index < 4; index += 1) {
     addMatch({
       suffix: `mb-r1-${index + 1}`,
       teamA: loserRef(`ub-r1-${index + 1}`),
-      teamB: loserRef(`ub-r2-${index + 1}`),
+      teamB: loserRef(`ub-r2-${4 - index}`),
       bracketRound: "Middle Bracket Round 1",
       roundLabel: "淘汰赛 · 中间败者组第 1 轮",
     });
@@ -305,8 +307,8 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   for (let index = 0; index < 2; index += 1) {
     addMatch({
       suffix: `mb-r3-${index + 1}`,
-      teamA: winnerRef(`mb-r2-${index + 1}`),
-      teamB: loserRef(`ub-r3-${index + 1}`),
+      teamA: loserRef(`ub-r3-${index + 1}`),
+      teamB: winnerRef(`mb-r2-${index + 1}`),
       bracketRound: "Middle Bracket Round 3",
       roundLabel: "淘汰赛 · 中间败者组第 3 轮",
     });
@@ -320,8 +322,8 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   });
   addMatch({
     suffix: "mb-final",
-    teamA: winnerRef("mb-r4-1"),
-    teamB: loserRef("ub-final"),
+    teamA: loserRef("ub-final"),
+    teamB: winnerRef("mb-r4-1"),
     bracketRound: "Middle Bracket Final",
     roundLabel: "淘汰赛 · 中间败者组决赛",
     bestOf: 5,
@@ -340,8 +342,8 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   for (let index = 0; index < 2; index += 1) {
     addMatch({
       suffix: `lb-r2-${index + 1}`,
-      teamA: winnerRef(`lb-r1-${index + 1}`),
-      teamB: loserRef(`mb-r2-${index + 1}`),
+      teamA: loserRef(`mb-r2-${2 - index}`),
+      teamB: winnerRef(`lb-r1-${index + 1}`),
       bracketRound: "Lower Bracket Round 2",
       roundLabel: "淘汰赛 · 败者组第 2 轮",
     });
@@ -349,8 +351,8 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   for (let index = 0; index < 2; index += 1) {
     addMatch({
       suffix: `lb-r3-${index + 1}`,
-      teamA: winnerRef(`lb-r2-${index + 1}`),
-      teamB: loserRef(`mb-r3-${index + 1}`),
+      teamA: loserRef(`mb-r3-${index + 1}`),
+      teamB: winnerRef(`lb-r2-${index + 1}`),
       bracketRound: "Lower Bracket Round 3",
       roundLabel: "淘汰赛 · 败者组第 3 轮",
     });
@@ -364,15 +366,15 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
   });
   addMatch({
     suffix: "lb-r5-1",
-    teamA: winnerRef("lb-r4-1"),
-    teamB: loserRef("mb-r4-1"),
+    teamA: loserRef("mb-r4-1"),
+    teamB: winnerRef("lb-r4-1"),
     bracketRound: "Lower Bracket Round 5",
     roundLabel: "淘汰赛 · 败者组第 5 轮",
   });
   addMatch({
     suffix: "lb-final",
-    teamA: winnerRef("lb-r5-1"),
-    teamB: loserRef("mb-final"),
+    teamA: loserRef("mb-final"),
+    teamB: winnerRef("lb-r5-1"),
     bracketRound: "Lower Bracket Final",
     roundLabel: "淘汰赛 · 败者组决赛",
     bestOf: 5,
