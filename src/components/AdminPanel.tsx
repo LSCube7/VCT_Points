@@ -48,7 +48,7 @@ import {
 import { allDemoTeams, demoSimulation } from "@/lib/data/demo";
 import { runRegionWorker } from "@/lib/engine/worker-client";
 import { getMessages } from "@/lib/i18n/messages";
-import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, MAP_POOL } from "@/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, MAP_POOL, tournamentRegion } from "@/lib/schedule";
 import { inspectKickoffScheduleMigration, migrateKickoffSchedule, type KickoffScheduleMigrationPreview } from "@/lib/schedule-migration";
 import type { RegionAnalysis } from "@/lib/types";
 import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
@@ -338,13 +338,13 @@ function BracketBoard({ matches, teams, onChange }: { matches: MatchResult[]; te
 }
 
 function TripleEliminationConfiguration({ config, teams, matches, migration, onChange, onMigrate, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onChange: (config: TournamentConfig) => void; onMigrate?: () => void; onOpenMatches?: () => void }) {
-  const eligibleTeams = teams.filter((team) => config.scope === "international" || config.id.endsWith(team.region));
+  const region = tournamentRegion(config, matches);
+  const eligibleTeams = teams.filter((team) => config.scope === "international" || team.region === region);
   const configuredRefs = config.bracket?.teamRefs ?? [];
   const seedSlots = Array.from({ length: 12 }, (_, index) => configuredRefs[index]?.startsWith("seed:") ? "" : configuredRefs[index] ?? "");
   const teamRefs = seedSlots.map((teamId, index) => teamId || `seed:${index + 1}`);
   const teamById = new Map(teams.map((team) => [team.id, team]));
   const selectedTeamIds = new Set(seedSlots.filter(Boolean));
-  const region = eligibleTeams[0]?.region;
   const currentBracketMatches = matches.filter((match) => match.eventId === config.eventId && match.region === region && match.phase === "playoffs");
   const hasLegacySchedule = currentBracketMatches.length > 0 && (currentBracketMatches.length !== 30 || !currentBracketMatches.some((match) => match.bracketRound === "Middle Bracket Round 1"));
   const isLegacyRegion = region ? migration.legacyRegions.includes(region) : false;
@@ -386,7 +386,8 @@ function TripleEliminationConfiguration({ config, teams, matches, migration, onC
 
 function ScheduleConfiguration({ config, teams, matches, migration, onMigrate, onChange, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onMigrate?: () => void; onChange: (config: TournamentConfig) => void; onOpenMatches?: () => void }) {
   const isTripleElimination = config.format === "triple-elimination";
-  const eligibleTeams = config.scope === "international" ? teams : teams.filter((team) => config.id.endsWith(team.region));
+  const configRegion = tournamentRegion(config, matches);
+  const eligibleTeams = config.scope === "international" ? teams : teams.filter((team) => team.region === configRegion);
   const groups = config.groupStage?.groups ?? [];
   function updateGroup(groupId: string, update: Partial<GroupConfig>) {
     onChange({ ...config, groupStage: { bestOf: config.groupStage?.bestOf ?? 3, groups: groups.map((group) => group.id === groupId ? { ...group, ...update } : group) } });
@@ -493,7 +494,7 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     let nextMatches = matches;
     let clearedResults = false;
     if (seedOrderChanged) {
-      const seedRegion = (["amer", "emea", "pacific", "china"] as RegionId[]).find((item) => config.id === `${config.eventId}-${item}`);
+      const seedRegion = tournamentRegion(config, matches);
       const regionMatches = seedRegion ? matches.filter((match) => match.eventId === config.eventId && match.region === seedRegion && match.phase === "playoffs") : [];
       const legacySchedule = regionMatches.length > 0 && (regionMatches.length !== 30 || !regionMatches.some((match) => match.bracketRound === "Middle Bracket Round 1"));
       if (legacySchedule) {
@@ -551,7 +552,9 @@ export function AdminPanel({ locale, initialDraft }: { locale: Locale; initialDr
     worker.promise.then((result) => { setAnalysis(result); setAnalysisState("done"); }).catch(() => setAnalysisState("error"));
   }
 
-  const selectedConfig = eventFilter === "all" ? tournaments.find((config) => config.scope === "regional" && config.id.endsWith(region)) ?? tournaments[0] : tournaments.find((config) => config.eventId === eventFilter && (config.scope === "international" || config.id.endsWith(region)));
+  const selectedConfig = eventFilter === "all"
+    ? tournaments.find((config) => config.scope === "regional" && tournamentRegion(config, matches) === region) ?? tournaments[0]
+    : tournaments.find((config) => config.eventId === eventFilter && (config.scope === "international" || tournamentRegion(config, matches) === region));
 
   return <Container maxWidth="xl" sx={{ py: { xs: 3, md: 6 } }}>
     <Stack spacing={1} mb={3}><Typography variant="h1" sx={{ fontSize: { xs: "2rem", md: "3rem" } }}>{copy.adminTitle}</Typography><Typography color="text.secondary">使用 MUI 控件录入全年赛果、配置赛程、维护队伍和 Logo；国际赛为全球唯一赛事，不按赛区重复。</Typography><Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}><Chip label="MUI 管理界面" variant="outlined" /><Chip label={`${matches.length} 场已建赛程`} variant="outlined" /><Button component="a" href="/api/auth/login" size="small" startIcon={<Login />}>使用 LSCube 登录</Button></Stack></Stack>

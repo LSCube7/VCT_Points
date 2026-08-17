@@ -10,6 +10,7 @@ import type {
   TournamentFormat,
   TournamentScope,
 } from "./types";
+import { REGION_IDS } from "./types";
 
 export const MAP_POOL = [
   "Abyss",
@@ -55,6 +56,22 @@ function bracketConfig(type: BracketConfig["type"], teamRefs: string[]): Bracket
 
 function tripleSeedSlots(teamRefs: string[] = []): string[] {
   return Array.from({ length: 12 }, (_, index) => teamRefs[index] || `seed:${index + 1}`);
+}
+
+/**
+ * Resolve the regional scope of a tournament configuration.
+ *
+ * Current configs use `event-region` IDs, but drafts created by an older
+ * version may use the reverse order or a generic regional ID. In the latter
+ * case the existing match records are the source of truth.
+ */
+export function tournamentRegion(config: Pick<TournamentConfig, "id" | "eventId" | "scope">, matches: MatchResult[] = []): RegionId | undefined {
+  if (config.scope !== "regional") return undefined;
+  const fromId = REGION_IDS.find((region) => config.id === `${config.eventId}-${region}`
+    || config.id === `${region}-${config.eventId}`
+    || config.id.endsWith(`-${region}`));
+  if (fromId) return fromId;
+  return REGION_IDS.find((region) => matches.some((match) => match.eventId === config.eventId && match.region === region && match.phase === "playoffs"));
 }
 
 export function createTournamentConfig(template: EventTemplate, teams: Team[], region?: RegionId): TournamentConfig {
@@ -333,7 +350,7 @@ function regionalTripleEliminationMatches(event: EventTemplate, region: RegionId
 
 export function applyTripleEliminationSeedOrder(matches: MatchResult[], config: TournamentConfig): MatchResult[] {
   if (config.format !== "triple-elimination" || !config.bracket) return matches;
-  const region = (["amer", "emea", "pacific", "china"] as RegionId[]).find((item) => config.id === `${config.eventId}-${item}`);
+  const region = tournamentRegion(config, matches);
   if (!region) return matches;
   const prefix = `${region}-${config.eventId}`;
   const seedSlots = tripleSeedSlots(config.bracket.teamRefs);

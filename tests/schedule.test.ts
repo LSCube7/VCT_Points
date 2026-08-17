@@ -88,11 +88,28 @@ describe("2026 schedule templates", () => {
     };
     const updated = applyTripleEliminationSeedOrder(schedule.matches, configured);
     const opening = updated.find((match) => match.id === "amer-kickoff-ub-r1-1");
+    const thirdOpening = updated.find((match) => match.id === "amer-kickoff-ub-r1-3");
     const upperRoundTwo = updated.find((match) => match.id === "amer-kickoff-ub-r2-1");
     expect(opening?.teamA).toBe("amer-team-7");
     expect(opening?.teamB).toBe("amer-team-2");
+    expect(thirdOpening?.teamA).toBe("amer-team-10");
+    expect(thirdOpening?.teamB).toBe("amer-team-5");
     expect(upperRoundTwo?.teamA).toBe("amer-team-12");
     expect(upperRoundTwo?.teamB).toBe("winner:amer-kickoff-ub-r1-1");
+  });
+
+  it("resolves legacy regional config IDs from the existing bracket", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const tournament = schedule.tournaments.find((item) => item.id === "kickoff-amer");
+    if (!tournament?.bracket) throw new Error("test fixture missing Kickoff bracket");
+    const configured = {
+      ...tournament,
+      id: "amer-kickoff",
+      bracket: { ...tournament.bracket, teamRefs: Array.from({ length: 12 }, (_, index) => `amer-team-${12 - index}`) },
+    };
+    const updated = applyTripleEliminationSeedOrder(schedule.matches, configured);
+    expect(updated.find((match) => match.id === "amer-kickoff-ub-r1-3")?.teamA).toBe("amer-team-4");
+    expect(updated.find((match) => match.id === "amer-kickoff-ub-r1-3")?.teamB).toBe("amer-team-3");
   });
 });
 
