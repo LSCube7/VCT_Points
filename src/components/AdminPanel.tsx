@@ -49,8 +49,8 @@ import { allDemoTeams, demoSimulation } from "@/lib/data/demo";
 import { resolveBracketParticipant } from "@/lib/bracket-display";
 import { runRegionWorker } from "@/lib/engine/worker-client";
 import { getMessages } from "@/lib/i18n/messages";
-import { calculateMastersAllocations, mastersParticipantIds, mastersSwissParticipantIds } from "@/lib/masters";
-import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, hydrateDraftSchedule, MAP_POOL, rebuildRegionalGroupMatches, tournamentRegion } from "@/lib/schedule";
+import { calculateMastersAllocations, mastersParticipantIds, mastersSwissParticipantIds, parseMastersQualificationRef } from "@/lib/masters";
+import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, hydrateDraftSchedule, MAP_POOL, rebuildRegionalGroupMatches, syncMastersQualificationMatches, syncMastersQualificationTournaments, tournamentRegion } from "@/lib/schedule";
 import { inspectKickoffScheduleMigration, migrateKickoffSchedule, type KickoffScheduleMigrationPreview } from "@/lib/schedule-migration";
 import type { RegionAnalysis } from "@/lib/types";
 import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Team, TournamentConfig } from "@/lib/types";
@@ -72,7 +72,12 @@ function displayParticipant(ref: string, teams: Map<string, Team>, matchesById?:
   if (team) return team.shortName || team.name;
   if (displayRef.startsWith("winner:")) return `胜者 · ${displayRef.slice("winner:".length)}`;
   if (displayRef.startsWith("loser:")) return `败者 · ${displayRef.slice("loser:".length)}`;
-  if (displayRef.startsWith("seed:")) return `待配置种子 ${displayRef.slice("seed:".length)}`;
+  const seedReference = displayRef.startsWith("seed:") ? displayRef.slice("seed:".length) : displayRef;
+  const qualification = parseMastersQualificationRef(seedReference);
+  if (qualification) return `待定 · ${qualification.region.toUpperCase()} 第 ${qualification.placement} 名`;
+  const seededTeam = displayRef.startsWith("seed:") ? teams.get(seedReference) : undefined;
+  if (seededTeam) return seededTeam.shortName || seededTeam.name;
+  if (displayRef.startsWith("seed:")) return `待配置种子 ${seedReference}`;
   return displayRef;
 }
 
@@ -92,6 +97,7 @@ const bracketRoundOrder = [
   "Middle Bracket Round 4",
   "Middle Bracket Final",
   "Lower Bracket Round 1",
+  "Lower Bracket Quarterfinal",
   "Lower Bracket Round 2",
   "Lower Bracket Round 3",
   "Lower Bracket Round 4",
@@ -118,6 +124,7 @@ const bracketRoundLabels: Record<string, string> = {
   "Middle Bracket Round 4": "中间败者组第 4 轮",
   "Middle Bracket Final": "中间败者组决赛",
   "Lower Bracket Round 1": "败者组第 1 轮",
+  "Lower Bracket Quarterfinal": "败者组四分之一决赛",
   "Lower Bracket Round 2": "败者组第 2 轮",
   "Lower Bracket Round 3": "败者组第 3 轮",
   "Lower Bracket Round 4": "败者组第 4 轮",
@@ -148,6 +155,10 @@ function firstRoundMatches(matches: MatchResult[]): MatchResult[] {
   }
 
   return [...matchesByEvent.values()].flatMap((eventMatches) => {
+    const eventId = eventMatches[0]?.eventId;
+    if (eventId && eventTemplate(eventId).format === "group-plus-playoffs") {
+      return eventMatches.filter((match) => ["Upper Bracket Round 1", "Lower Bracket Round 1", "Opening Round"].includes(match.bracketRound ?? ""));
+    }
     const firstRoundRank = Math.min(...eventMatches.map((match) => bracketRoundRank(match.bracketRound ?? "淘汰赛")));
     return eventMatches.filter((match) => bracketRoundRank(match.bracketRound ?? "淘汰赛") === firstRoundRank);
   });
@@ -266,15 +277,15 @@ function GroupMatchList({ matches, teams, matchesById, onChange }: { matches: Ma
   );
 }
 
-function MastersAllocationSummary({ teams }: { teams: Team[] }) {
-  const allocations = calculateMastersAllocations(teams);
+function MastersAllocationSummary({ teams, matches, eventId }: { teams: Team[]; matches: MatchResult[]; eventId: "masters-1" | "masters-2" }) {
+  const allocations = calculateMastersAllocations(teams, matches, eventId);
   const teamById = new Map(teams.map((team) => [team.id, team]));
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" gap={1} mb={1.5}>
         <Box>
           <Typography variant="subtitle1" fontWeight={700}>国际赛事名额自动计算</Typography>
-          <Typography variant="body2" color="text.secondary">Masters 不属于任何单一赛区，四赛区各自动分配 3 个名额，共 12 队。抽签对阵仍在赛果录入页手动填写。</Typography>
+          <Typography variant="body2" color="text.secondary">名额由 {eventId === "masters-1" ? "Kickoff 三败淘汰的胜者组 / 中间败者组 / 败者组决赛" : "Stage 1 地区季后赛的总决赛与败者组决赛"} 结果自动确定；源赛事未完成时不会按队伍配置顺序代填。Swiss 抽签对阵仍在赛果录入页手动填写。</Typography>
         </Box>
         <Chip size="small" color="primary" label="4 赛区 × 3 名额 = 12 队" />
       </Stack>
@@ -288,8 +299,8 @@ function MastersAllocationSummary({ teams }: { teams: Team[] }) {
                   <Chip size="small" label={`${allocation.slotCount} 个名额`} />
                 </Stack>
                 <Stack spacing={0.5} mt={1}>
-                  {allocation.teamIds.map((teamId, index) => <Typography key={teamId} variant="body2">{index + 1}. {teamById.get(teamId)?.shortName ?? teamId}</Typography>)}
-                  {allocation.teamIds.length < allocation.slotCount && <Typography variant="caption" color="warning.main">还缺 {allocation.slotCount - allocation.teamIds.length} 支启用队伍</Typography>}
+                  {allocation.teamIdsByPlacement.map((teamId, index) => <Typography key={`${allocation.region}-${index}`} variant="body2">{index + 1}. {teamId ? (teamById.get(teamId)?.shortName ?? teamId) : "待源赛事赛果"}</Typography>)}
+                  {!allocation.resolved && <Typography variant="caption" color="warning.main">源赛事尚未完成，名额暂待定</Typography>}
                 </Stack>
               </CardContent>
             </Card>
@@ -304,7 +315,8 @@ function MastersSwissDrawConfiguration({ matches, teams, onChange }: { matches: 
   const drawMatches = matches.filter((match) => match.eventId.startsWith("masters-") && match.phase === "swiss" && /-swiss-r1-\d+$/.test(match.id));
   if (drawMatches.length === 0) return null;
 
-  const participantIds = mastersSwissParticipantIds(teams);
+  const eventId = drawMatches[0]?.eventId as "masters-1" | "masters-2";
+  const participantIds = mastersSwissParticipantIds(teams, matches, eventId);
   const teamById = new Map(teams.map((team) => [team.id, team]));
   function optionsFor(current: string): string[] {
     const selectedByOtherMatches = new Set(drawMatches.flatMap((match) => [match.teamA, match.teamB]).filter((teamId) => teamId !== current));
@@ -320,7 +332,7 @@ function MastersSwissDrawConfiguration({ matches, teams, onChange }: { matches: 
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Typography variant="subtitle1" fontWeight={700}>Masters Swiss 抽签对阵</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5 }}>系统已按四赛区名额准备 Swiss 参赛池（每赛区第 2、3 个名额）。请根据官方抽签结果手动填写首轮双方；同一队伍不能重复进入首轮。</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1.5 }}>参赛池来自四赛区源赛事的第 2、3 名。源赛事未完成的队伍会显示为待定；名额确定后，请根据官方抽签结果手动填写首轮双方，同一队伍不能重复进入首轮。</Typography>
       <Stack spacing={1.25}>
         {drawMatches.map((match, index) => (
           <Stack key={match.id} direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "center" }}>
@@ -355,7 +367,9 @@ function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchR
 
   const teamById = new Map(teams.map((team) => [team.id, team]));
   function candidatesFor(match: MatchResult): Team[] {
-    const internationalParticipants = eventTemplate(match.eventId).scope === "international" ? new Set(mastersParticipantIds(teams)) : undefined;
+    const internationalParticipants = eventTemplate(match.eventId).scope === "international"
+      ? new Set(mastersParticipantIds(teams, matches, match.eventId as "masters-1" | "masters-2"))
+      : undefined;
     return teams.filter((team) => team.active && (internationalParticipants ? internationalParticipants.has(team.id) : match.region === "global" || team.region === match.region));
   }
   function updateParticipant(match: MatchResult, side: "teamA" | "teamB", value: string) {
@@ -477,7 +491,7 @@ function ScheduleConfiguration({ config, teams, matches, migration, onMigrate, o
   }
   return <Stack spacing={2}>
     <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }}><Box sx={{ flex: 1 }}><Typography variant="h6">{config.name}</Typography><Typography variant="body2" color="text.secondary">{isTripleElimination ? "赛区赛事：12 队三败淘汰，胜者组 / 中间败者组 / 败者组固定衔接" : config.scope === "international" ? "国际赛事：四赛区自动分配名额，抽签对阵手动录入" : "赛区赛事：可视化配置小组分组与淘汰赛入口"}</Typography></Box><FormControl size="small" sx={{ minWidth: 190 }} disabled><InputLabel id={`${config.id}-format-label`}>赛事格式</InputLabel><Select labelId={`${config.id}-format-label`} label="赛事格式" value={config.format}><MenuItem value="triple-elimination">三败淘汰</MenuItem><MenuItem value="group-plus-playoffs">小组赛 + 淘汰赛</MenuItem><MenuItem value="swiss-plus-playoffs">Swiss + 淘汰赛</MenuItem></Select></FormControl>{isTripleElimination ? <TextField size="small" sx={{ minWidth: 260 }} label="淘汰赛起始" value="固定：胜者组第 1 轮（前四种子第 2 轮进入）" disabled /> : <FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id={`${config.id}-start-label`}>淘汰赛起始</InputLabel><Select labelId={`${config.id}-start-label`} label="淘汰赛起始" value={config.bracket?.startRound ?? "quarterfinals"} onChange={(event) => onChange({ ...config, bracket: { type: config.bracket?.type ?? "double-elimination", teamRefs: config.bracket?.teamRefs ?? [], startRound: event.target.value as "quarterfinals" | "semifinals" } })}><MenuItem value="quarterfinals">四分之一决赛</MenuItem><MenuItem value="semifinals">半决赛</MenuItem></Select></FormControl>}</Stack>
-    {config.scope === "international" && <MastersAllocationSummary teams={teams} />}
+    {config.scope === "international" && <MastersAllocationSummary teams={teams} matches={matches} eventId={config.eventId as "masters-1" | "masters-2"} />}
     {isTripleElimination ? <TripleEliminationConfiguration config={config} teams={teams} matches={matches} migration={migration} onChange={onChange} onMigrate={onMigrate} onOpenMatches={onOpenMatches} /> : config.scope === "international" ? <Alert severity="info" icon={<Settings />}>国际赛事的 12 个名额和 Swiss 参赛池由四赛区名额自动计算，不在这里手动改分组。请到“赛果录入”页填写官方抽签的 Swiss 首轮和淘汰赛首轮对阵。</Alert> : <>
       <Divider />
       <Stack direction="row" justifyContent="space-between" alignItems="center"><Box><Typography variant="subtitle1">小组 / Swiss 分组</Typography><Typography variant="body2" color="text.secondary">修改分组会同步重建常规赛对阵；仍在同一分组的相同对局会保留赛果。</Typography></Box><Button startIcon={<Add />} onClick={addGroup}>新增分组</Button></Stack>
@@ -508,7 +522,7 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
   const initial = useMemo(() => {
     const teams = initialDraft?.teams?.length ? initialDraft.teams : allDemoTeams();
     const generated = createFullSchedule(teams);
-    return { teams, ...hydrateDraftSchedule(generated, initialDraft) };
+    return { teams, ...hydrateDraftSchedule(generated, initialDraft, teams) };
   }, [initialDraft]);
   const [region, setRegion] = useState<RegionId>("amer");
   const [teams, setTeams] = useState<Team[]>(() => initial.teams);
@@ -577,7 +591,9 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
   }
 
   function updateMatch(id: string, update: Partial<MatchResult>) {
-    setMatches((current) => current.map((match) => match.id === id ? { ...match, ...update } : match));
+    const nextMatches = syncMastersQualificationMatches(matches.map((match) => match.id === id ? { ...match, ...update } : match), teams);
+    setMatches(nextMatches);
+    setTournaments((currentTournaments) => syncMastersQualificationTournaments(currentTournaments, nextMatches, teams));
     markDraftChanged();
   }
   function updateTournament(config: TournamentConfig) {
@@ -619,7 +635,9 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
       });
       clearedResults = hasResults;
     }
-    setTournaments((current) => current.map((item) => item.id === config.id ? config : item));
+    nextMatches = syncMastersQualificationMatches(nextMatches, teams);
+    const nextTournaments = syncMastersQualificationTournaments(tournaments.map((item) => item.id === config.id ? config : item), nextMatches, teams);
+    setTournaments(nextTournaments);
     if (nextMatches !== matches) setMatches(nextMatches);
     markDraftChanged();
     if (rebuiltGroupSchedule && clearedResults) {
@@ -632,6 +650,9 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
   }
   function updateTeams(nextTeams: Team[]) {
     setTeams(nextTeams);
+    const nextMatches = syncMastersQualificationMatches(matches, nextTeams);
+    setMatches(nextMatches);
+    setTournaments((currentTournaments) => syncMastersQualificationTournaments(currentTournaments, nextMatches, nextTeams));
     markDraftChanged();
   }
   function migrateKickoff() {

@@ -27,6 +27,16 @@ describe("2026 schedule templates", () => {
     }
   });
 
+  it("models the Stage 1 playoff path used for Masters London qualification", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const playoffs = schedule.matches.filter((match) => match.eventId === "stage-1" && match.region === "amer" && match.phase === "playoffs");
+    expect(playoffs).toHaveLength(12);
+    expect(playoffs.filter((match) => match.bracketRound === "Upper Bracket Round 1")).toHaveLength(2);
+    expect(playoffs.filter((match) => match.bracketRound === "Lower Bracket Round 1")).toHaveLength(2);
+    expect(playoffs.find((match) => match.bracketRound === "Grand Final")?.bestOf).toBe(5);
+    expect(playoffs.find((match) => match.id === "amer-stage-1-lb-final")?.bestOf).toBe(5);
+  });
+
   it("creates a complete 12-team Kickoff triple-elimination graph", () => {
     const schedule = createFullSchedule(allDemoTeams());
     const tournament = schedule.tournaments.find((item) => item.id === "kickoff-amer");
