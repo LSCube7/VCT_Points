@@ -4,8 +4,8 @@ export type MatchRegion = RegionId | "global";
 
 export type Locale = "zh-CN" | "en";
 export type MatchStatus = "scheduled" | "completed" | "forfeit" | "cancelled";
-export const SWISS_SERIES_SCORES = ["2-0", "2-1", "1-2", "0-2"] as const;
-export type SwissSeriesScore = (typeof SWISS_SERIES_SCORES)[number];
+export const SWISS_RECORDS = ["2-0", "2-1", "1-2", "0-2"] as const;
+export type SwissRecord = (typeof SWISS_RECORDS)[number];
 export type QualificationMethod = "stage2-winner" | "stage2-runner-up" | "championship-points";
 export type MatchPhase = "group" | "swiss" | "playoffs";
 export type TournamentScope = "regional" | "international";
@@ -38,8 +38,6 @@ export interface MatchResult {
   teamB: string;
   status: MatchStatus;
   winner?: string;
-  /** Swiss 赛只记录系列赛比分，不记录逐地图回合比分。 */
-  seriesScore?: SwissSeriesScore;
   maps: MapScore[];
   isRegularSeason: boolean;
   isTiebreaker: boolean;
@@ -75,6 +73,13 @@ export interface TournamentConfig {
     bestOf: 3 | 5;
   };
   bracket?: BracketConfig;
+  /** Swiss 阶段只保存每支队伍的最终胜负记录，不展开单场赛果。 */
+  swissRecords?: SwissTeamRecord[];
+}
+
+export interface SwissTeamRecord {
+  teamId: string;
+  record: SwissRecord;
 }
 
 export interface DraftPayload {

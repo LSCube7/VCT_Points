@@ -172,6 +172,24 @@ describe("2026 schedule templates", () => {
     expect(hydrated.matches.find((match) => match.id === "amer-kickoff-ub-r1-3")?.phase).toBe("playoffs");
     expect(hydrated.tournaments.some((tournament) => tournament.id === "kickoff-amer")).toBe(true);
   });
+
+  it("clears legacy per-match Swiss details during draft hydration", () => {
+    const generated = createFullSchedule(allDemoTeams());
+    const target = generated.matches.find((match) => match.id === "masters-1-swiss-r1-1");
+    if (!target) throw new Error("missing Swiss match");
+    const hydrated = hydrateDraftSchedule(generated, {
+      matches: generated.matches.map((match) => match.id === target.id ? {
+        ...match,
+        status: "completed",
+        winner: match.teamA,
+        maps: [{ map: "Haven", teamARounds: 13, teamBRounds: 8 }],
+      } : match),
+      tournaments: generated.tournaments,
+    }, allDemoTeams());
+    const normalized = hydrated.matches.find((match) => match.id === target.id);
+    expect(normalized).toMatchObject({ status: "scheduled", maps: [] });
+    expect(normalized?.winner).toBeUndefined();
+  });
 });
 
 describe("map score validation", () => {

@@ -28,50 +28,8 @@ describe("match validation", () => {
     expect(validateMatchResult({ ...base, status: "scheduled", winner: undefined, maps: [] }).success).toBe(true);
   });
 
-  it("accepts a completed Swiss match with only a series score", () => {
-    expect(validateMatchResult({
-      ...base,
-      id: "swiss-1",
-      eventId: "masters-1",
-      region: "global",
-      stage: "masters-1",
-      phase: "swiss",
-      isRegularSeason: false,
-      winner: "a",
-      seriesScore: "2-1",
-      maps: [],
-    }).success).toBe(true);
-  });
-
-  it("requires a valid Swiss series score and matching winner", () => {
-    const swiss = {
-      ...base,
-      id: "swiss-2",
-      eventId: "masters-1",
-      region: "global" as const,
-      stage: "masters-1" as const,
-      phase: "swiss" as const,
-      isRegularSeason: false,
-      winner: "a",
-      maps: [],
-    };
-    expect(validateMatchResult(swiss).success).toBe(false);
-    expect(validateMatchResult({ ...swiss, seriesScore: "0-2", winner: "a" }).success).toBe(false);
-    expect(validateMatchResult({ ...swiss, seriesScore: "3-0" }).success).toBe(false);
-  });
-
-  it("rejects map details on a completed Swiss match", () => {
-    expect(validateMatchResult({
-      ...base,
-      id: "swiss-3",
-      eventId: "masters-1",
-      region: "global",
-      stage: "masters-1",
-      phase: "swiss",
-      isRegularSeason: false,
-      winner: "a",
-      seriesScore: "2-0",
-    }).success).toBe(false);
+  it("allows Swiss matches to remain unplayed without map data", () => {
+    expect(validateMatchResult({ ...base, id: "swiss-1", eventId: "masters-1", region: "global", stage: "masters-1", phase: "swiss", status: "scheduled", winner: undefined, maps: [], isRegularSeason: false }).success).toBe(true);
   });
 });
 
@@ -92,5 +50,22 @@ describe("tournament configuration validation", () => {
 
   it("rejects duplicate triple-elimination seed slots", () => {
     expect(validateTournamentConfig({ ...baseConfig, bracket: { ...baseConfig.bracket, teamRefs: ["amer-team-1", ...baseConfig.bracket.teamRefs.slice(1, 11), "amer-team-1"] } }).success).toBe(false);
+  });
+
+  it("accepts Swiss team records and rejects duplicate team entries", () => {
+    const swissConfig = {
+      ...baseConfig,
+      id: "masters-1-global",
+      eventId: "masters-1",
+      name: "Masters Santiago",
+      scope: "international" as const,
+      format: "swiss-plus-playoffs" as const,
+      swissRecords: [
+        { teamId: "team-a", record: "2-0" as const },
+        { teamId: "team-b", record: "2-1" as const },
+      ],
+    };
+    expect(validateTournamentConfig(swissConfig).success).toBe(true);
+    expect(validateTournamentConfig({ ...swissConfig, swissRecords: [...swissConfig.swissRecords, { teamId: "team-a", record: "1-2" as const }] }).success).toBe(false);
   });
 });

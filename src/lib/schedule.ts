@@ -6,6 +6,7 @@ import type {
   MatchRegion,
   MatchResult,
   RegionId,
+  SwissRecord,
   Team,
   TournamentConfig,
   TournamentFormat,
@@ -74,6 +75,20 @@ function inferMatchPhase(match: MatchResult): MatchPhase {
   return match.region === "global" ? "swiss" : "group";
 }
 
+function normalizeDraftMatch(match: MatchResult): MatchResult {
+  const phase = match.phase ?? inferMatchPhase(match);
+  if (phase !== "swiss") return match.phase ? match : { ...match, phase };
+  return {
+    ...match,
+    phase,
+    status: "scheduled",
+    winner: undefined,
+    maps: [],
+    playedAt: undefined,
+    notes: undefined,
+  };
+}
+
 /**
  * Keep older drafts usable after schedule metadata was added. Missing phase
  * metadata is inferred, and a draft that predates Kickoff records receives
@@ -85,7 +100,7 @@ export function hydrateDraftSchedule(
   teams?: Team[],
 ): Pick<DraftPayload, "matches" | "tournaments"> {
   const draftMatches = draft?.matches?.length
-    ? draft.matches.map((match) => match.phase ? match : { ...match, phase: inferMatchPhase(match) })
+    ? draft.matches.map(normalizeDraftMatch)
     : generated.matches;
   const matches = draftMatches.some((match) => match.eventId === "kickoff")
     ? draftMatches
@@ -99,7 +114,8 @@ export function hydrateDraftSchedule(
   ];
   if (!teams) return { matches, tournaments };
   const syncedMatches = syncMastersQualificationMatches(matches, teams);
-  return { matches: syncedMatches, tournaments: syncMastersQualificationTournaments(tournaments, syncedMatches, teams) };
+  const syncedTournaments = syncMastersQualificationTournaments(tournaments, syncedMatches, teams);
+  return { matches: syncMastersSwissRecordMatches(syncedMatches, syncedTournaments), tournaments: syncedTournaments };
 }
 
 /**
@@ -139,9 +155,10 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
     bracket: {
       ...bracketConfig(template.format === "triple-elimination" ? "triple-elimination" : "double-elimination", template.format === "swiss-plus-playoffs" ? [
         ...mastersDirectSeeds.map((teamId) => `seed:${teamId}`),
-        ...Array.from({ length: 4 }, (_, index) => `winner:${template.id}-swiss-${index + 1}`),
+        ...Array.from({ length: 4 }, (_, index) => `swiss-pending:${template.id}:${index + 1}`),
       ] : template.format === "triple-elimination" ? tripleSeedSlots() : teamIds.slice(0, 8)),
     },
+    swissRecords: template.format === "swiss-plus-playoffs" ? [] : undefined,
   };
 }
 
@@ -501,7 +518,6 @@ function resetMatchParticipants(match: MatchResult, teamA: string, teamB: string
     teamB,
     status: "scheduled",
     winner: undefined,
-    seriesScore: undefined,
     maps: [],
     playedAt: undefined,
     notes: undefined,
@@ -562,6 +578,46 @@ export function syncMastersQualificationMatches(matches: MatchResult[], teams: T
   return next;
 }
 
+const SWISS_QUALIFYING_RECORDS: readonly SwissRecord[] = ["2-0", "2-1"];
+
+function swissRoundOneParticipantIds(matches: MatchResult[], eventId: string): string[] {
+  return [...new Set(matches
+    .filter((match) => match.eventId === eventId && match.phase === "swiss" && /-swiss-r1-\d+$/.test(match.id))
+    .flatMap((match) => [match.teamA, match.teamB]))];
+}
+
+/**
+ * Replace the four Swiss qualification placeholders once every team has a
+ * final 2-0/2-1/1-2/0-2 record. Partial records deliberately keep the
+ * placeholders so an unfinished draft cannot be mistaken for a completed
+ * qualification list.
+ */
+export function syncMastersSwissRecordMatches(matches: MatchResult[], tournaments: TournamentConfig[]): MatchResult[] {
+  let next = matches;
+  for (const tournament of tournaments) {
+    if (tournament.scope !== "international" || tournament.format !== "swiss-plus-playoffs") continue;
+    const participantIds = swissRoundOneParticipantIds(next, tournament.eventId);
+    const recordsByTeam = new Map((tournament.swissRecords ?? []).map((entry) => [entry.teamId, entry.record]));
+    const complete = participantIds.length === 8 && participantIds.every((teamId) => recordsByTeam.has(teamId));
+    const qualified = complete
+      ? participantIds.filter((teamId) => SWISS_QUALIFYING_RECORDS.includes(recordsByTeam.get(teamId) as SwissRecord))
+      : [];
+    const playoffMatches = next
+      .filter((match) => match.eventId === tournament.eventId && match.id.match(new RegExp(`^${tournament.eventId}-playoffs-ubqf-\\d+$`)))
+      .sort((left, right) => Number(left.id.match(/(\d+)$/)?.[1] ?? 0) - Number(right.id.match(/(\d+)$/)?.[1] ?? 0));
+    if (playoffMatches.length !== 4) continue;
+    const participants = qualified.length === 4
+      ? qualified
+      : playoffMatches.map((_, index) => `swiss-pending:${tournament.eventId}:${index + 1}`);
+    const participantByMatch = new Map(playoffMatches.map((match, index) => [match.id, participants[index]]));
+    next = next.map((match) => {
+      const teamB = participantByMatch.get(match.id);
+      return teamB ? resetMatchParticipants(match, match.teamA, teamB) : match;
+    });
+  }
+  return next;
+}
+
 /** Keep the read-only global tournament metadata aligned with resolved slots. */
 export function syncMastersQualificationTournaments(
   tournaments: TournamentConfig[],
@@ -581,6 +637,10 @@ export function syncMastersQualificationTournaments(
     const hydrate = (reference: string) => placementTeamIds.get(reference) ?? reference;
     const swissTeamIds = mastersSwissParticipantRefs(eventId).map(hydrate);
     const directSeedRefs = mastersDirectParticipantRefs(eventId).map((reference) => `seed:${hydrate(reference)}`);
+    const swissParticipantIds = new Set(swissRoundOneParticipantIds(matches, eventId));
+    const swissRecords = tournament.swissRecords
+      ?.map((entry) => ({ ...entry, teamId: hydrate(entry.teamId) }))
+      .filter((entry) => swissParticipantIds.has(entry.teamId));
     return {
       ...tournament,
       groupStage: tournament.groupStage ? {
@@ -591,6 +651,7 @@ export function syncMastersQualificationTournaments(
         ...tournament.bracket,
         teamRefs: [...directSeedRefs, ...tournament.bracket.teamRefs.slice(directSeedRefs.length)],
       } : tournament.bracket,
+      swissRecords,
     };
   });
 }
@@ -626,7 +687,7 @@ function internationalSwissMatches(event: EventTemplate): MatchResult[] {
 function internationalPlayoffMatches(event: EventTemplate): MatchResult[] {
   const eventId = event.id as MastersEventId;
   const directSeeds = mastersDirectParticipantRefs(eventId).map((teamId) => `seed:${teamId}`);
-  const swissSeeds = Array.from({ length: 4 }, (_, index) => `winner:${event.id}-swiss-r3-qualifier-${index + 1}`);
+  const swissSeeds = Array.from({ length: 4 }, (_, index) => `swiss-pending:${event.id}:${index + 1}`);
   const bracketSlots = [...directSeeds, ...swissSeeds];
   const matches: MatchResult[] = [];
   for (let index = 0; index < 4; index += 1) {

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SWISS_SERIES_SCORES } from "./types";
+import { SWISS_RECORDS } from "./types";
 import type { TournamentConfig } from "./types";
 
 export const mapScoreSchema = z.object({
@@ -40,6 +40,10 @@ const tournamentConfigSchema = z.object({
     startRound: z.enum(["quarterfinals", "semifinals"]),
     teamRefs: z.array(z.string().min(1)).max(32),
   }).optional(),
+  swissRecords: z.array(z.object({
+    teamId: z.string().min(1),
+    record: z.enum(SWISS_RECORDS),
+  })).max(32).optional(),
 });
 
 export const matchResultSchema = z.object({
@@ -51,7 +55,6 @@ export const matchResultSchema = z.object({
   teamB: z.string().min(1),
   status: z.enum(["scheduled", "completed", "forfeit", "cancelled"]),
   winner: z.string().optional(),
-  seriesScore: z.enum(SWISS_SERIES_SCORES).optional(),
   maps: z.array(mapScoreSchema),
   isRegularSeason: z.boolean(),
   isTiebreaker: z.boolean(),
@@ -73,6 +76,13 @@ export const draftPayloadSchema = z.object({
 });
 
 export function validateTournamentConfig(config: TournamentConfig) {
+  if (config.format === "swiss-plus-playoffs") {
+    const records = config.swissRecords ?? [];
+    if (new Set(records.map((entry) => entry.teamId)).size !== records.length) {
+      return { success: false as const, error: new Error("Swiss 队伍最终战绩不能重复填写") };
+    }
+    return { success: true as const };
+  }
   if (config.format !== "triple-elimination") return { success: true as const };
   const refs = config.bracket?.teamRefs ?? [];
   if (refs.length !== 12) return { success: false as const, error: new Error("三败淘汰必须配置 12 个种子入口") };
@@ -94,12 +104,6 @@ export function validateMatchResult(value: unknown) {
   if (match.status === "completed" && !match.winner) {
     return { success: false as const, error: new Error("已完成比赛必须填写胜者") };
   }
-  if (match.status === "forfeit" && match.seriesScore) {
-    return { success: false as const, error: new Error("弃权比赛不应填写 Swiss 系列赛比分") };
-  }
-  if (match.status !== "completed" && match.seriesScore) {
-    return { success: false as const, error: new Error("系列赛比分只能填写在已完成的 Swiss 比赛中") };
-  }
   if (match.status === "forfeit" && match.maps.length > 0) {
     return { success: false as const, error: new Error("弃权比赛不应填写地图比分") };
   }
@@ -110,22 +114,6 @@ export function validateMatchResult(value: unknown) {
     return { success: false as const, error: new Error("弃权比赛必须填写原因") };
   }
   if (match.status === "completed") {
-    if (match.phase === "swiss") {
-      if (match.maps.length > 0) {
-        return { success: false as const, error: new Error("Swiss 比赛只填写系列赛比分，不应填写地图比分") };
-      }
-      if (!match.seriesScore) {
-        return { success: false as const, error: new Error("已完成 Swiss 比赛必须填写 2-0、2-1、1-2 或 0-2") };
-      }
-      const expectedWinner = match.seriesScore.startsWith("2-") ? match.teamA : match.teamB;
-      if (match.winner !== expectedWinner) {
-        return { success: false as const, error: new Error("Swiss 系列赛比分与胜者不一致") };
-      }
-      return result;
-    }
-    if (match.seriesScore) {
-      return { success: false as const, error: new Error("只有 Swiss 比赛可以填写系列赛比分") };
-    }
     if (match.maps.length === 0) {
       return { success: false as const, error: new Error("正常完赛必须填写逐地图比分") };
     }

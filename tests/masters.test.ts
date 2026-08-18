@@ -7,7 +7,7 @@ import {
   mastersQualificationRef,
   mastersSwissParticipantIds,
 } from "../src/lib/masters";
-import { createFullSchedule, syncMastersQualificationMatches } from "../src/lib/schedule";
+import { createFullSchedule, syncMastersQualificationMatches, syncMastersSwissRecordMatches } from "../src/lib/schedule";
 import type { MatchResult } from "../src/lib/types";
 
 function sourceMatch(id: string, teamA: string, teamB: string, winner: string): MatchResult {
@@ -145,5 +145,29 @@ describe("international Masters allocation", () => {
 
     expect(changed.find((match) => match.id === first.id)?.teamA).toBe(second.teamA);
     expect(changed.find((match) => match.id === second.id)?.teamA).toBe(first.teamA);
+  });
+
+  it("places teams with 2-0 or 2-1 records into the Masters playoffs", () => {
+    const teams = allDemoTeams();
+    const schedule = createFullSchedule(teams);
+    const regionalResults = ["amer", "emea", "pacific", "china"].flatMap((region) => [
+      sourceMatch(`${region}-kickoff-ub-final`, `${region}-team-1`, `${region}-team-2`, `${region}-team-1`),
+      sourceMatch(`${region}-kickoff-mb-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
+      sourceMatch(`${region}-kickoff-lb-final`, `${region}-team-5`, `${region}-team-6`, `${region}-team-5`),
+    ]);
+    const matches = syncMastersQualificationMatches([
+      ...schedule.matches.filter((match) => match.region === "global"),
+      ...regionalResults,
+    ], teams);
+    const config = schedule.tournaments.find((tournament) => tournament.id === "masters-1-global");
+    if (!config) throw new Error("missing Masters config");
+    const participants = matches
+      .filter((match) => match.eventId === "masters-1" && /-swiss-r1-\d+$/.test(match.id))
+      .flatMap((match) => [match.teamA, match.teamB]);
+    const withRecords = syncMastersSwissRecordMatches(matches, [{
+      ...config,
+      swissRecords: participants.map((teamId, index) => ({ teamId, record: index < 4 ? "2-1" as const : "1-2" as const })),
+    }]);
+    expect(withRecords.filter((match) => match.id.match(/masters-1-playoffs-ubqf-\d+$/)).map((match) => match.teamB)).toEqual(participants.slice(0, 4));
   });
 });
