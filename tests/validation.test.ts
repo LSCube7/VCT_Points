@@ -68,4 +68,21 @@ describe("tournament configuration validation", () => {
     expect(validateTournamentConfig(swissConfig).success).toBe(true);
     expect(validateTournamentConfig({ ...swissConfig, swissRecords: [...swissConfig.swissRecords, { teamId: "team-a", record: "1-2" as const }] }).success).toBe(false);
   });
+
+  it("accepts group final records and requires the group schedule length", () => {
+    const groupConfig = {
+      ...baseConfig,
+      id: "stage-1-amer",
+      eventId: "stage-1",
+      name: "Stage 1",
+      format: "group-plus-playoffs" as const,
+      groupStage: {
+        groups: [{ id: "alpha", name: "Alpha", teamIds: ["team-a", "team-b", "team-c", "team-d", "team-e", "team-f"] }],
+        bestOf: 3 as const,
+      },
+      groupRecords: [{ groupId: "alpha", teamId: "team-a", wins: 5, losses: 0 }],
+    };
+    expect(validateTournamentConfig(groupConfig).success).toBe(true);
+    expect(validateTournamentConfig({ ...groupConfig, groupRecords: [{ groupId: "alpha", teamId: "team-a", wins: 4, losses: 0 }] }).success).toBe(false);
+  });
 });

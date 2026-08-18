@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { allDemoTeams } from "../src/lib/data/demo";
-import { applyTripleEliminationSeedOrder, createFullSchedule, hydrateDraftSchedule, rebuildRegionalGroupMatches } from "../src/lib/schedule";
+import { applyTripleEliminationSeedOrder, createFullSchedule, hydrateDraftSchedule, rebuildRegionalGroupMatches, syncGroupRecordsWithGroups } from "../src/lib/schedule";
 import { validateMatchResult } from "../src/lib/validation";
 import type { MatchResult } from "../src/lib/types";
 
@@ -26,6 +26,29 @@ describe("2026 schedule templates", () => {
       const matches = schedule.matches.filter((match) => match.eventId === eventId && match.phase === "group");
       expect(new Set(matches.map((match) => match.region))).toEqual(new Set(["amer", "emea", "pacific", "china"]));
     }
+  });
+
+  it("stores group-stage records by team instead of requiring match results", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const config = schedule.tournaments.find((tournament) => tournament.id === "stage-1-amer");
+    if (!config?.groupStage) throw new Error("test fixture missing Stage 1 groups");
+    const [alpha] = config.groupStage.groups;
+    if (!alpha) throw new Error("test fixture missing Alpha group");
+    const updated = syncGroupRecordsWithGroups({ ...config, groupRecords: [{ groupId: alpha.id, teamId: alpha.teamIds[0] ?? "", wins: 5, losses: 0 }] });
+    expect(updated.groupRecords).toEqual([{ groupId: alpha.id, teamId: alpha.teamIds[0], wins: 5, losses: 0 }]);
+    expect(syncGroupRecordsWithGroups({ ...updated, groupStage: { ...config.groupStage, groups: [{ ...alpha, teamIds: alpha.teamIds.slice(1) }] } }).groupRecords).toEqual([]);
+  });
+
+  it("migrates a complete legacy round-robin draft into team records", () => {
+    const schedule = createFullSchedule(allDemoTeams());
+    const config = schedule.tournaments.find((tournament) => tournament.id === "stage-1-amer");
+    if (!config) throw new Error("test fixture missing Stage 1 config");
+    const legacyMatches = schedule.matches.map((match) => match.eventId === "stage-1" && match.region === "amer" && match.phase === "group"
+      ? { ...match, status: "completed" as const, winner: match.teamA }
+      : match);
+    const migrated = syncGroupRecordsWithGroups({ ...config, groupRecords: undefined }, legacyMatches);
+    expect(migrated.groupRecords).toHaveLength(12);
+    expect(migrated.groupRecords?.every((record) => record.wins + record.losses === 5)).toBe(true);
   });
 
   it("models the Stage 1 playoff path used for Masters London qualification", () => {

@@ -56,6 +56,14 @@ export interface GroupConfig {
   teamIds: string[];
 }
 
+/** 常规赛小组阶段只记录每支队伍的最终胜负战绩。 */
+export interface GroupTeamRecord {
+  groupId: string;
+  teamId: string;
+  wins: number;
+  losses: number;
+}
+
 export interface BracketConfig {
   type: "single-elimination" | "double-elimination" | "triple-elimination";
   startRound: BracketStartRound;
@@ -72,6 +80,8 @@ export interface TournamentConfig {
     groups: GroupConfig[];
     bestOf: 3 | 5;
   };
+  /** 小组赛不展开单场对局，只保存每支队伍的最终战绩。 */
+  groupRecords?: GroupTeamRecord[];
   bracket?: BracketConfig;
   /** Swiss 阶段只保存每支队伍的最终胜负记录，不展开单场赛果。 */
   swissRecords?: SwissTeamRecord[];

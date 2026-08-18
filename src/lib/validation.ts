@@ -25,6 +25,13 @@ const groupConfigSchema = z.object({
   teamIds: z.array(z.string().min(1)).max(24),
 });
 
+const groupTeamRecordSchema = z.object({
+  groupId: z.string().min(1),
+  teamId: z.string().min(1),
+  wins: z.number().int().min(0).max(24),
+  losses: z.number().int().min(0).max(24),
+});
+
 const tournamentConfigSchema = z.object({
   id: z.string().min(1),
   eventId: z.string().min(1),
@@ -35,6 +42,7 @@ const tournamentConfigSchema = z.object({
     groups: z.array(groupConfigSchema).max(8),
     bestOf: z.union([z.literal(3), z.literal(5)]),
   }).optional(),
+  groupRecords: z.array(groupTeamRecordSchema).max(64).optional(),
   bracket: z.object({
     type: z.enum(["single-elimination", "double-elimination", "triple-elimination"]),
     startRound: z.enum(["quarterfinals", "semifinals"]),
@@ -80,6 +88,30 @@ export function validateTournamentConfig(config: TournamentConfig) {
     const records = config.swissRecords ?? [];
     if (new Set(records.map((entry) => entry.teamId)).size !== records.length) {
       return { success: false as const, error: new Error("Swiss 队伍最终战绩不能重复填写") };
+    }
+    return { success: true as const };
+  }
+  if (config.format === "group-plus-playoffs") {
+    const groups = config.groupStage?.groups ?? [];
+    const groupById = new Map(groups.map((group) => [group.id, group]));
+    const seen = new Set<string>();
+    for (const record of config.groupRecords ?? []) {
+      const key = `${record.groupId}:${record.teamId}`;
+      if (seen.has(key)) {
+        return { success: false as const, error: new Error("小组赛队伍最终战绩不能重复填写") };
+      }
+      seen.add(key);
+      const group = groupById.get(record.groupId);
+      if (!group) {
+        return { success: false as const, error: new Error(`小组赛战绩引用了不存在的分组：${record.groupId}`) };
+      }
+      if (!group.teamIds.includes(record.teamId)) {
+        return { success: false as const, error: new Error("小组赛战绩中的队伍不属于对应分组") };
+      }
+      const expectedMatches = Math.max(group.teamIds.length - 1, 0);
+      if (record.wins + record.losses !== expectedMatches) {
+        return { success: false as const, error: new Error(`${group.name} 中每支队伍的胜负数必须合计 ${expectedMatches} 场`) };
+      }
     }
     return { success: true as const };
   }

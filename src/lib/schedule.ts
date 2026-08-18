@@ -8,6 +8,7 @@ import type {
   RegionId,
   SwissRecord,
   Team,
+  GroupTeamRecord,
   TournamentConfig,
   TournamentFormat,
   TournamentScope,
@@ -104,10 +105,11 @@ export function hydrateDraftSchedule(
 
   const draftById = new Map((draft?.tournaments ?? []).map((tournament) => [tournament.id, tournament]));
   const generatedIds = new Set(generated.tournaments.map((tournament) => tournament.id));
-  const tournaments = [
+  const rawTournaments = [
     ...generated.tournaments.map((tournament) => draftById.get(tournament.id) ?? tournament),
     ...(draft?.tournaments ?? []).filter((tournament) => !generatedIds.has(tournament.id)),
   ];
+  const tournaments = rawTournaments.map((tournament) => syncGroupRecordsWithGroups(tournament, matches));
   if (!teams) return { matches, tournaments };
   const syncedMatches = syncMastersQualificationMatches(matches, teams);
   const syncedTournaments = syncMastersQualificationTournaments(tournaments, syncedMatches, teams);
@@ -128,6 +130,53 @@ export function tournamentRegion(config: Pick<TournamentConfig, "id" | "eventId"
     || config.id.endsWith(`-${region}`));
   if (fromId) return fromId;
   return REGION_IDS.find((region) => matches.some((match) => match.eventId === config.eventId && match.region === region && match.phase === "playoffs"));
+}
+
+function deriveCompletedGroupRecords(config: TournamentConfig, matches: MatchResult[]): GroupTeamRecord[] {
+  if (config.scope !== "regional" || config.format !== "group-plus-playoffs") return [];
+  const region = tournamentRegion(config, matches);
+  if (!region) return [];
+  const groupMatches = matches.filter((match) => match.eventId === config.eventId
+    && match.region === region
+    && match.phase === "group"
+    && match.isRegularSeason
+    && match.groupId);
+  const records: GroupTeamRecord[] = [];
+  for (const group of config.groupStage?.groups ?? []) {
+    const expectedMatches = (group.teamIds.length * Math.max(group.teamIds.length - 1, 0)) / 2;
+    const matchesInGroup = groupMatches.filter((match) => match.groupId === group.id);
+    const pairKeys = new Set(matchesInGroup.map((match) => JSON.stringify([match.teamA, match.teamB].sort())));
+    if (expectedMatches === 0 || matchesInGroup.length !== expectedMatches || pairKeys.size !== expectedMatches) continue;
+    if (matchesInGroup.some((match) => (match.status !== "completed" && match.status !== "forfeit") || !match.winner)) continue;
+    const winsByTeam = new Map(group.teamIds.map((teamId) => [teamId, 0]));
+    for (const match of matchesInGroup) {
+      if (winsByTeam.has(match.winner as string)) winsByTeam.set(match.winner as string, (winsByTeam.get(match.winner as string) ?? 0) + 1);
+    }
+    for (const teamId of group.teamIds) {
+      const wins = winsByTeam.get(teamId) ?? 0;
+      records.push({ groupId: group.id, teamId, wins, losses: group.teamIds.length - 1 - wins });
+    }
+  }
+  return records;
+}
+
+/** Keep group-stage records aligned with the current visual group configuration. */
+export function syncGroupRecordsWithGroups(config: TournamentConfig, matches: MatchResult[] = []): TournamentConfig {
+  if (config.format !== "group-plus-playoffs") return config;
+  const groups = config.groupStage?.groups ?? [];
+  const groupById = new Map(groups.map((group) => [group.id, group]));
+  const migratedRecords = config.groupRecords === undefined ? deriveCompletedGroupRecords(config, matches) : config.groupRecords;
+  const seen = new Set<string>();
+  const groupRecords = (migratedRecords ?? []).filter((record) => {
+    const group = groupById.get(record.groupId);
+    const key = `${record.groupId}:${record.teamId}`;
+    if (!group || !group.teamIds.includes(record.teamId) || seen.has(key)) return false;
+    const expectedMatches = Math.max(group.teamIds.length - 1, 0);
+    if (record.wins < 0 || record.losses < 0 || record.wins + record.losses !== expectedMatches) return false;
+    seen.add(key);
+    return true;
+  });
+  return { ...config, groupRecords };
 }
 
 export function createTournamentConfig(template: EventTemplate, teams: Team[], region?: RegionId): TournamentConfig {
@@ -154,6 +203,7 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
         ...Array.from({ length: 4 }, (_, index) => `swiss-pending:${template.id}:${index + 1}`),
       ] : template.format === "triple-elimination" ? tripleSeedSlots() : teamIds.slice(0, 8)),
     },
+    groupRecords: template.format === "group-plus-playoffs" ? [] : undefined,
     swissRecords: template.format === "swiss-plus-playoffs" ? [] : undefined,
   };
 }

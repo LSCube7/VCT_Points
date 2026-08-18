@@ -1,4 +1,4 @@
-import type { MatchResult, TeamRankingMetrics } from "./types";
+import type { GroupTeamRecord, MatchResult, TeamRankingMetrics } from "./types";
 
 export const ENGINE_VERSION = "2026.1.0";
 
@@ -28,11 +28,13 @@ export function placementPoints(
   return CHAMPIONSHIP_POINTS[event][placement - 1] ?? 0;
 }
 
-export function regularSeasonMatchPoints(matches: MatchResult[], teamId: string): number {
-  return matches.reduce((total, match) => {
-    if (!match.isRegularSeason || match.isTiebreaker || match.status === "cancelled") return total;
+export function regularSeasonMatchPoints(matches: MatchResult[], teamId: string, groupRecords: GroupTeamRecord[] = []): number {
+  const groupWins = groupRecords.reduce((total, record) => total + (record.teamId === teamId ? record.wins : 0), 0);
+  const matchWins = matches.reduce((total, match) => {
+    if (!match.isRegularSeason || match.phase === "group" || match.isTiebreaker || match.status === "cancelled") return total;
     return total + (match.status !== "scheduled" && match.winner === teamId ? 1 : 0);
   }, 0);
+  return groupWins + matchWins;
 }
 
 export function mapAndRoundDiff(matches: MatchResult[], teamId: string): Pick<TeamRankingMetrics, "mapDiff" | "roundDiff"> {

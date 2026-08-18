@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareRankingMetrics, placementPoints } from "../src/lib/rules";
+import { compareRankingMetrics, placementPoints, regularSeasonMatchPoints } from "../src/lib/rules";
 
 const metrics = (overrides: Partial<Parameters<typeof compareRankingMetrics>[0]> = {}) => ({
   stage2Finish: 2,
@@ -35,5 +35,9 @@ describe("VCT championship rules", () => {
   it("keeps head-to-head comparison opt-in for a two-team tie", () => {
     expect(compareRankingMetrics(metrics({ headToHeadWins: 1 }), metrics({ headToHeadWins: 0 }), false)).toBe(0);
     expect(compareRankingMetrics(metrics({ headToHeadWins: 1 }), metrics({ headToHeadWins: 0 }), true)).toBeLessThan(0);
+  });
+
+  it("uses team-level group records instead of group match details", () => {
+    expect(regularSeasonMatchPoints([], "team-a", [{ groupId: "alpha", teamId: "team-a", wins: 5, losses: 0 }])).toBe(5);
   });
 });
