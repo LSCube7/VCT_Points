@@ -2,17 +2,19 @@
 
 import { createHash } from "node:crypto";
 import { and, eq, desc } from "drizzle-orm";
-import { draftVersions } from "../../../../db/schema";
+import { draftVersions, publishedVersions } from "../../../../db/schema";
 import { getDb, getSql } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
+import { invalidatePublishedCache } from "@/lib/publish-cache";
 import { draftPayloadSchema, validateMatchResult, validateTournamentConfig } from "@/lib/validation";
 import type { DraftPayload } from "@/lib/types";
 
 export interface AdminActionResult {
   ok: boolean;
-  code?: "DATABASE_NOT_CONFIGURED" | "VALIDATION_ERROR" | "REVISION_CONFLICT" | "SAVE_FAILED" | "UNAUTHORIZED";
+  code?: "DATABASE_NOT_CONFIGURED" | "VALIDATION_ERROR" | "REVISION_CONFLICT" | "SAVE_FAILED" | "UNAUTHORIZED" | "PUBLISH_CACHE_REFRESH_FAILED";
   message?: string;
   revision?: number;
+  version?: string;
 }
 
 export interface DraftLoadResult {
@@ -67,6 +69,30 @@ export async function validateDraft(payload: unknown): Promise<AdminActionResult
   if (!invalidMatch) return { ok: true, revision: parsed.data.revision };
   const validationError = invalidMatch.result.success ? new Error("比赛结果无效") : invalidMatch.result.error;
   return { ok: false, code: "VALIDATION_ERROR", message: `比赛 ${invalidMatch.match.id}：${validationError.message}` };
+}
+
+export async function refreshPublishedCache(): Promise<AdminActionResult> {
+  try {
+    await requireAdmin();
+    const db = getDb();
+    const latest = await db
+      .select({ version: publishedVersions.version })
+      .from(publishedVersions)
+      .orderBy(desc(publishedVersions.publishedAt))
+      .limit(1);
+    if (!latest[0]) return { ok: false, code: "PUBLISH_CACHE_REFRESH_FAILED", message: "当前没有已发布的精确结果，请先完成发布" };
+    invalidatePublishedCache();
+    return { ok: true, version: latest[0].version, message: `公开页面缓存已刷新，当前发布版本：${latest[0].version}` };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "PUBLISH_CACHE_REFRESH_FAILED";
+    if (message === "UNAUTHORIZED" || message === "FORBIDDEN") return { ok: false, code: "UNAUTHORIZED", message: "请先使用有权限的 LSCube 账号登录" };
+    if (message === "DATABASE_NOT_CONFIGURED") return { ok: false, code: "DATABASE_NOT_CONFIGURED", message: "尚未连接 Neon 数据库" };
+    console.error("[admin.refreshPublishedCache] " + JSON.stringify({
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: redactErrorMessage(error),
+    }));
+    return { ok: false, code: "PUBLISH_CACHE_REFRESH_FAILED", message: "公开页面缓存刷新失败，请稍后重试" };
+  }
 }
 
 export async function loadDraft(): Promise<DraftLoadResult> {

@@ -18,14 +18,15 @@ export function ProbabilityChart({
   const elementRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!elementRef.current || data.length === 0) return;
+    const sortedData = [...data].sort((left, right) => right.value - left.value || left.name.localeCompare(right.name));
     const chart = echarts.init(elementRef.current, undefined, { renderer: "canvas" });
     chart.setOption({
       animationDuration: 350,
-      grid: { top: 12, right: 18, bottom: 24, left: 96 },
+      grid: { top: 12, right: 18, bottom: 24, left: 12, containLabel: true },
       tooltip: { trigger: "axis", valueFormatter: (value: number) => `${value.toFixed(2)}%` },
       xAxis: { type: "value", max: 100, axisLabel: { color: "#5f6b7a", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#e2e8f0" } } },
-      yAxis: { type: "category", data: data.map((item) => item.name), axisLabel: { color: "#17202a" } },
-      series: [{ type: "bar", data: data.map((item) => ({ value: item.value, itemStyle: { color: item.color ?? "#1976d2", borderRadius: [0, 5, 5, 0] } })), barMaxWidth: 24 }],
+      yAxis: { type: "category", inverse: true, data: sortedData.map((item) => item.name), axisLabel: { color: "#17202a" } },
+      series: [{ type: "bar", data: sortedData.map((item) => ({ value: item.value, itemStyle: { color: item.color ?? "#1976d2", borderRadius: [0, 5, 5, 0] } })), barMaxWidth: 24 }],
     });
     const resize = () => chart.resize();
     window.addEventListener("resize", resize);
@@ -34,7 +35,7 @@ export function ProbabilityChart({
 
   return (
     <>
-      <div ref={elementRef} className="chart-surface" role="img" aria-label={ariaLabel} />
+      <div ref={elementRef} className="chart-surface" style={{ height: Math.max(280, data.length * 42) }} role="img" aria-label={ariaLabel} />
       <details>
         <summary>查看数据表 / View data table</summary>
         <table className="chart-data-table">

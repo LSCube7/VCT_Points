@@ -56,12 +56,16 @@ export function mapAndRoundDiff(matches: MatchResult[], teamId: string): Pick<Te
   );
 }
 
+/**
+ * Apply the active VCT qualification tie-break scope. The current model
+ * intentionally stops after the five event-placement criteria; the remaining
+ * stored metrics are retained for compatibility and display only.
+ */
 export function compareRankingMetrics(
   left: TeamRankingMetrics,
   right: TeamRankingMetrics,
-  includeHeadToHead = true,
+  _includeHeadToHead = true,
 ): number {
-  const descending = (a: number, b: number) => b - a;
   const ascending = (a: number, b: number) => a - b;
   const comparisons: Array<[number, number, (a: number, b: number) => number]> = [
     [left.stage2Finish, right.stage2Finish, ascending],
@@ -69,24 +73,10 @@ export function compareRankingMetrics(
     [left.stage1Finish, right.stage1Finish, ascending],
     [left.masters1Finish, right.masters1Finish, ascending],
     [left.kickoffFinish, right.kickoffFinish, ascending],
-    [left.regularSeasonWins, right.regularSeasonWins, descending],
-    [left.mapDiff, right.mapDiff, descending],
-    [left.roundDiff, right.roundDiff, descending],
   ];
   for (const [a, b, compare] of comparisons) {
     const result = compare(a, b);
     if (result !== 0) return result;
-  }
-  if (includeHeadToHead) {
-    const headToHeadComparisons: Array<[number, number, (a: number, b: number) => number]> = [
-      [left.headToHeadWins, right.headToHeadWins, descending],
-      [left.headToHeadMapDiff, right.headToHeadMapDiff, descending],
-      [left.headToHeadRoundDiff, right.headToHeadRoundDiff, descending],
-    ];
-    for (const [a, b, compare] of headToHeadComparisons) {
-      const result = compare(a, b);
-      if (result !== 0) return result;
-    }
   }
   return 0;
 }

@@ -1,4 +1,5 @@
 import type { ScenarioGroup } from "../types";
+import { sortByDescending } from "../sorting";
 
 export interface ScenarioFeature {
   scenarioId: string;
@@ -98,7 +99,7 @@ export function clusterScenarios(
   const k = Math.max(1, Math.min(requestedK ?? recommendedK, maxK));
   const selected = k === 1 ? fitKMedoids(features, weights, 1) : (fits[k] ?? fitKMedoids(features, weights, k));
   const assignments = selected.assignments;
-  const clusters: ScenarioCluster[] = Array.from({ length: k }, (_, clusterIndex) => {
+  const clusters: ScenarioCluster[] = sortByDescending(Array.from({ length: k }, (_, clusterIndex) => {
     const members = features
       .map((feature, index) => ({ feature, index }))
       .filter(({ index }) => assignments[index] === clusterIndex);
@@ -108,6 +109,6 @@ export function clusterScenarios(
       totalProbability: members.reduce((sum, { index }) => sum + weights[index], 0),
       medoidScenarioId: features[selected.medoids[clusterIndex]]?.scenarioId ?? "",
     };
-  });
+  }), (cluster) => cluster.totalProbability, (cluster) => cluster.id);
   return { recommendedK, clusters, scores };
 }

@@ -28,13 +28,15 @@ describe("VCT championship rules", () => {
     expect(compareRankingMetrics(metrics({ stage2Finish: 1 }), metrics({ stage2Finish: 2 }))).toBeLessThan(0);
   });
 
-  it("falls through to regular-season wins after event placements", () => {
-    expect(compareRankingMetrics(metrics({ regularSeasonWins: 7 }), metrics({ regularSeasonWins: 4 }))).toBeLessThan(0);
+  it("stops after the Kickoff finish", () => {
+    expect(compareRankingMetrics(metrics({ regularSeasonWins: 7 }), metrics({ regularSeasonWins: 4 }))).toBe(0);
+    expect(compareRankingMetrics(metrics({ mapDiff: 10 }), metrics({ mapDiff: -10 }))).toBe(0);
+    expect(compareRankingMetrics(metrics({ roundDiff: 20 }), metrics({ roundDiff: -20 }))).toBe(0);
   });
 
-  it("keeps head-to-head comparison opt-in for a two-team tie", () => {
+  it("does not use head-to-head fields after the fifth criterion", () => {
     expect(compareRankingMetrics(metrics({ headToHeadWins: 1 }), metrics({ headToHeadWins: 0 }), false)).toBe(0);
-    expect(compareRankingMetrics(metrics({ headToHeadWins: 1 }), metrics({ headToHeadWins: 0 }), true)).toBeLessThan(0);
+    expect(compareRankingMetrics(metrics({ headToHeadWins: 1 }), metrics({ headToHeadWins: 0 }), true)).toBe(0);
   });
 
   it("uses team-level group records instead of group match details", () => {

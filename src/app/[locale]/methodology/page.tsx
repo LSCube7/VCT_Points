@@ -9,8 +9,8 @@ export default async function MethodologyPage({ params }: { params: Promise<{ lo
   const { locale } = await params;
   const copy = getMessages(locale);
   const labels = locale === "zh-CN"
-    ? { title: "方法与规则", lead: "把规则、数据截止时间和概率假设公开，让每个数字都能追溯。", model: "计算模型", rules: "冠军积分规则", tiebreak: "同分判定顺序", sources: "规则来源", tiebreakItems: ["Stage 2 最终名次", "Masters 2 最终名次", "Stage 1 最终名次", "Masters 1 最终名次", "Kickoff 最终名次", "常规赛胜场、地图净胜、回合净胜", "两队同分时比较相互战绩、地图和回合差"] }
-    : { title: "Methodology & rules", lead: "Rules, cut-off dates, and probability assumptions stay visible and traceable.", model: "Calculation model", rules: "Championship points", tiebreak: "Tie-break order", sources: "Sources", tiebreakItems: ["Stage 2 final standing", "Masters 2 final standing", "Stage 1 final standing", "Masters 1 final standing", "Kickoff final standing", "Regular-season wins, map differential, round differential", "For a two-team tie: head-to-head match, map, and round results"] };
+    ? { title: "方法与规则", lead: "把规则、数据截止时间和概率假设公开，让每个数字都能追溯。", model: "计算模型", rules: "冠军积分规则", tiebreak: "同分判定顺序", sources: "规则来源", tiebreakItems: ["Stage 2 最终名次", "Masters 2 最终名次", "Stage 1 最终名次", "Masters 1 最终名次", "Kickoff 最终名次"] }
+    : { title: "Methodology & rules", lead: "Rules, cut-off dates, and probability assumptions stay visible and traceable.", model: "Calculation model", rules: "Championship points", tiebreak: "Tie-break order", sources: "Sources", tiebreakItems: ["Stage 2 final standing", "Masters 2 final standing", "Stage 1 final standing", "Masters 1 final standing", "Kickoff final standing"] };
   const eventLabels: Record<string, string> = { kickoff: "Kickoff", "masters-1": "Masters Santiago", "stage-1": "Stage 1", "masters-2": "Masters London", "stage-2": "Stage 2" };
   return (
     <Container maxWidth="lg" sx={{ py: { xs: 3, md: 6 } }}>

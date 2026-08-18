@@ -1,5 +1,25 @@
 import type { MatchResult } from "./types";
 
+export type ParticipantIdentity = (reference: string) => string;
+
+function normalizeReference(reference: string): string {
+  return reference.trim();
+}
+
+function findMatchById(matchId: string, matchesById: Map<string, MatchResult>): MatchResult | undefined {
+  const normalizedId = normalizeReference(matchId);
+  return matchesById.get(normalizedId)
+    ?? [...matchesById.values()].find((match) => normalizeReference(match.id) === normalizedId);
+}
+
+function isPendingSeedReference(reference: string): boolean {
+  const seedValue = reference.slice("seed:".length);
+  return !seedValue
+    || /^\d+$/.test(seedValue)
+    || seedValue.startsWith("qualified:")
+    || seedValue.startsWith("pending:");
+}
+
 /**
  * Resolves a bracket reference to the concrete team which currently occupies
  * that slot. The stored value remains the reference (for example
@@ -10,28 +30,31 @@ export function resolveBracketParticipant(
   reference: string,
   matchesById: Map<string, MatchResult>,
   visited = new Set<string>(),
+  identity: ParticipantIdentity = (value) => value,
 ): string | undefined {
-  const isWinnerReference = reference.startsWith("winner:");
-  const isLoserReference = reference.startsWith("loser:");
+  const normalizedReference = normalizeReference(reference);
+  const isWinnerReference = normalizedReference.startsWith("winner:");
+  const isLoserReference = normalizedReference.startsWith("loser:");
   if (!isWinnerReference && !isLoserReference) {
-    return reference.startsWith("seed:") ? undefined : reference;
+    if (normalizedReference.startsWith("seed:") && isPendingSeedReference(normalizedReference)) return undefined;
+    return normalizedReference;
   }
 
-  const sourceMatchId = reference.slice(reference.indexOf(":") + 1);
+  const sourceMatchId = normalizedReference.slice(normalizedReference.indexOf(":") + 1).trim();
   if (!sourceMatchId || visited.has(sourceMatchId)) return undefined;
-  const sourceMatch = matchesById.get(sourceMatchId);
+  const sourceMatch = findMatchById(sourceMatchId, matchesById);
   if (!sourceMatch?.winner) return undefined;
 
   const nextVisited = new Set(visited);
   nextVisited.add(sourceMatchId);
-  const resolvedWinner = resolveBracketParticipant(sourceMatch.winner, matchesById, nextVisited);
+  const resolvedWinner = resolveBracketParticipant(sourceMatch.winner, matchesById, nextVisited, identity);
   if (!resolvedWinner) return undefined;
   if (isWinnerReference) return resolvedWinner;
 
-  const resolvedTeamA = resolveBracketParticipant(sourceMatch.teamA, matchesById, nextVisited);
-  const resolvedTeamB = resolveBracketParticipant(sourceMatch.teamB, matchesById, nextVisited);
+  const resolvedTeamA = resolveBracketParticipant(sourceMatch.teamA, matchesById, nextVisited, identity);
+  const resolvedTeamB = resolveBracketParticipant(sourceMatch.teamB, matchesById, nextVisited, identity);
   if (!resolvedTeamA || !resolvedTeamB) return undefined;
-  if (resolvedWinner === resolvedTeamA) return resolvedTeamB;
-  if (resolvedWinner === resolvedTeamB) return resolvedTeamA;
+  if (identity(resolvedWinner) === identity(resolvedTeamA)) return resolvedTeamB;
+  if (identity(resolvedWinner) === identity(resolvedTeamB)) return resolvedTeamA;
   return undefined;
 }

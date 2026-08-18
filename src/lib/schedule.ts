@@ -6,12 +6,12 @@ import type {
   MatchRegion,
   MatchResult,
   RegionId,
-  SwissRecord,
   Team,
   GroupTeamRecord,
   TournamentConfig,
   TournamentFormat,
   TournamentScope,
+  Stage2PlayInGroupOrder,
 } from "./types";
 import { REGION_IDS } from "./types";
 import {
@@ -68,28 +68,263 @@ function tripleSeedSlots(teamRefs: string[] = []): string[] {
   return Array.from({ length: 12 }, (_, index) => teamRefs[index] || `seed:${index + 1}`);
 }
 
+function isMastersPlayoffMatch(match: Pick<MatchResult, "eventId" | "region" | "id">): boolean {
+  return (match.eventId === "masters-1" || match.eventId === "masters-2")
+    && match.region === "global"
+    && match.id.includes("-playoffs-");
+}
+
 function inferMatchPhase(match: MatchResult): MatchPhase {
+  if (isMastersPlayoffMatch(match)) return "playoffs";
   if (match.phase) return match.phase;
-  if (match.bracketRound) return "playoffs";
+  if (match.bracketRound || match.roundLabel?.includes("淘汰赛") || /-r1-\d+$/.test(match.id)) return "playoffs";
   if (match.groupId || match.isRegularSeason) return "group";
   return match.region === "global" ? "swiss" : "group";
 }
 
 function normalizeDraftMatch(match: MatchResult): MatchResult {
-  const phase = match.phase ?? inferMatchPhase(match);
-  return match.phase ? match : { ...match, phase };
+  const phase = inferMatchPhase(match);
+  return match.phase === phase ? match : { ...match, phase };
 }
 
 function isLegacyMastersSwissMatch(match: MatchResult): boolean {
   return (match.eventId === "masters-1" || match.eventId === "masters-2")
     && match.region === "global"
+    && !isMastersPlayoffMatch(match)
     && (match.phase === "swiss" || match.id.includes("-swiss-"));
+}
+
+function isRegionalStagePlayoffMatch(match: MatchResult): boolean {
+  return (match.eventId === "stage-1" || match.eventId === "stage-2")
+    && match.phase === "playoffs"
+    && match.region !== "global";
+}
+
+function hasRecordedMatchResult(match: MatchResult): boolean {
+  return match.status !== "scheduled"
+    || Boolean(match.winner)
+    || match.maps.length > 0
+    || Boolean(match.playedAt)
+    || Boolean(match.notes);
+}
+
+function regionalStageMatchOrder(match: MatchResult): number {
+  const result = match.id.match(/-r1-(\d+)$/);
+  return result ? Number(result[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+function isCurrentRegionalStagePlayoffSchedule(existing: MatchResult[], generated: MatchResult[]): boolean {
+  if (existing.length !== generated.length) return false;
+  const existingIds = new Set(existing.map((match) => match.id));
+  return generated.every((match) => existingIds.has(match.id));
+}
+
+function regionalStageEntrySlots(generated: MatchResult[], region: RegionId): Array<{ id: string; side: "teamA" | "teamB" }> {
+  if (region === "china") {
+    return generated
+      .filter((match) => match.bracketRound === "Upper Bracket Quarterfinal")
+      .sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }))
+      .flatMap((match) => [{ id: match.id, side: "teamA" as const }, { id: match.id, side: "teamB" as const }]);
+  }
+  const mainMatches = generated.filter((match) => !match.id.includes("-play-in-"));
+  return [
+    ["ub-r1-1", "teamA"], ["ub-r1-1", "teamB"],
+    ["ub-r1-2", "teamA"], ["ub-r1-2", "teamB"],
+    ["ub-sf-1", "teamA"], ["ub-sf-2", "teamA"],
+    ["lb-r1-1", "teamB"], ["lb-r1-2", "teamB"],
+  ].map(([suffix, side]) => ({ id: mainMatches.find((match) => match.id.endsWith(`-${suffix}`))?.id ?? suffix, side: side as "teamA" | "teamB" }));
+}
+
+function migrateLegacyRegionalStagePlayoffs(matches: MatchResult[], generatedMatches: MatchResult[], teams?: Team[]): MatchResult[] {
+  let next = [...matches];
+  const knownTeamIds = teams ? new Set(teams.map((team) => team.id)) : undefined;
+  const isConcreteTeamId = (value: string) => knownTeamIds
+    ? knownTeamIds.has(value)
+    : !/^(winner|loser|seed|qualified|swiss|pending):/.test(value);
+
+  for (const eventId of ["stage-1", "stage-2"] as const) {
+    for (const region of REGION_IDS) {
+      const existing = next.filter((match) => isRegionalStagePlayoffMatch(match) && match.eventId === eventId && match.region === region);
+      const generated = generatedMatches.filter((match) => isRegionalStagePlayoffMatch(match) && match.eventId === eventId && match.region === region);
+      if (existing.length === 0 || generated.length === 0 || isCurrentRegionalStagePlayoffSchedule(existing, generated)) continue;
+
+      // A legacy draft may contain four generic R1 matches. Regenerate the
+      // graph only while those matches are still empty; completed results must
+      // not be silently reassigned to a different bracket structure.
+      if (existing.some(hasRecordedMatchResult)) continue;
+      const legacyTeamIds = existing
+        .sort((left, right) => regionalStageMatchOrder(left) - regionalStageMatchOrder(right))
+        .flatMap((match) => [match.teamA, match.teamB])
+        .filter(isConcreteTeamId);
+      const migratedById = new Map(generated.map((match) => [match.id, match]));
+      regionalStageEntrySlots(generated, region).forEach(({ id, side }, index) => {
+        const teamId = legacyTeamIds[index];
+        const match = migratedById.get(id);
+        if (!teamId || !match) return;
+        migratedById.set(id, { ...match, [side]: teamId });
+      });
+      const legacyIds = new Set(existing.map((match) => match.id));
+      next = [...next.filter((match) => !legacyIds.has(match.id)), ...generated.map((match) => migratedById.get(match.id) ?? match)];
+    }
+  }
+  return next;
+}
+
+function migrateRegionalStageLowerQuarterfinals(matches: MatchResult[], generatedMatches: MatchResult[]): MatchResult[] {
+  let next = [...matches];
+  for (const eventId of ["stage-1", "stage-2"] as const) {
+    for (const region of ["amer", "emea", "pacific"] as RegionId[]) {
+      const generated = generatedMatches.filter((match) => isRegionalStagePlayoffMatch(match) && match.eventId === eventId && match.region === region);
+      const expectedById = new Map(generated.filter((match) => match.bracketRound === "Lower Bracket Quarterfinal").map((match) => [match.id, match]));
+      const currentById = new Map(next.filter((match) => isRegionalStagePlayoffMatch(match) && match.eventId === eventId && match.region === region).map((match) => [match.id, match]));
+      const updates = [...expectedById.entries()].filter(([id, expected]) => {
+        const current = currentById.get(id);
+        return current
+          && (current.teamA !== expected.teamA || current.teamB !== expected.teamB)
+          && !hasRecordedMatchResult(current);
+      });
+      if (updates.length === 0) continue;
+      const updateById = new Map(updates);
+      next = next.map((match) => {
+        const expected = updateById.get(match.id);
+        return expected ? { ...match, teamA: expected.teamA, teamB: expected.teamB } : match;
+      });
+    }
+  }
+  return next;
+}
+
+function isStage2ScheduleReference(ref: string): boolean {
+  return ref.startsWith("stage2-group:")
+    || ref.startsWith("stage2-challenger:")
+    || ref.startsWith("stage2-national-cup:")
+    || ref.startsWith("winner:")
+    || ref.startsWith("loser:");
+}
+
+function migrateStage2InternationalPlayInBracket(matches: MatchResult[], generatedMatches: MatchResult[]): MatchResult[] {
+  let next = [...matches];
+  for (const region of ["amer", "emea", "pacific"] as RegionId[]) {
+    const generatedStage2 = generatedMatches.filter((match) => match.eventId === "stage-2" && match.region === region && match.phase === "playoffs");
+    const currentById = new Map(next.filter((match) => match.eventId === "stage-2" && match.region === region && match.phase === "playoffs").map((match) => [match.id, match]));
+    const mismatched = generatedStage2
+      .map((expected) => ({ expected, current: currentById.get(expected.id) }))
+      .filter(({ expected, current }) => current && (
+        (isStage2ScheduleReference(current.teamA) && current.teamA !== expected.teamA)
+        || (isStage2ScheduleReference(current.teamB) && current.teamB !== expected.teamB)
+      ));
+    if (mismatched.length === 0) continue;
+    const expectedById = new Map(mismatched.map(({ expected }) => [expected.id, expected]));
+    next = next.map((match) => {
+      const expected = expectedById.get(match.id);
+      if (!expected) return match;
+      const nextTeamA = isStage2ScheduleReference(match.teamA) ? expected.teamA : match.teamA;
+      const nextTeamB = isStage2ScheduleReference(match.teamB) ? expected.teamB : match.teamB;
+      const participantsChanged = match.teamA !== nextTeamA || match.teamB !== nextTeamB;
+      const resetResult = hasRecordedMatchResult(match);
+      return {
+        ...match,
+        teamA: nextTeamA,
+        teamB: nextTeamB,
+        phase: expected.phase,
+        bracketRound: expected.bracketRound,
+        roundLabel: expected.roundLabel,
+        bestOf: expected.bestOf,
+        ...(participantsChanged && resetResult ? {
+          status: "scheduled" as const,
+          winner: undefined,
+          maps: [],
+          playedAt: undefined,
+          notes: undefined,
+        } : {}),
+      };
+    });
+  }
+  return next;
+}
+
+function isChinaStage2PlayInPlacementRef(ref: string): boolean {
+  return /^(?:winner|loser):china-stage-2-play-in-(?:ub-r3-[12]|lb-r3-[12]|ub-r4-1|lb-r4-1)$/.test(ref);
+}
+
+function migrateStage2ChinaPlayInBracket(matches: MatchResult[], generatedMatches: MatchResult[]): MatchResult[] {
+  const obsoleteIds = new Set([
+    "china-stage-2-play-in-ub-r4-1",
+    "china-stage-2-play-in-lb-r4-1",
+  ]);
+  let next = matches.filter((match) => !obsoleteIds.has(match.id));
+  const expectedById = new Map(
+    generatedMatches
+      .filter((match) => /^china-stage-2-play-in-lb-r[23]-\d+$/.test(match.id) || /^china-stage-2-ub-qf-\d+$/.test(match.id))
+      .map((match) => [match.id, match]),
+  );
+  if (expectedById.size === 0) return next;
+
+  return next.map((match) => {
+    const expected = expectedById.get(match.id);
+    if (!expected) return match;
+    const isMainQuarterfinal = /^china-stage-2-ub-qf-\d+$/.test(match.id);
+    const nextTeamA = isMainQuarterfinal ? match.teamA : expected.teamA;
+    const nextTeamB = isMainQuarterfinal && !isChinaStage2PlayInPlacementRef(match.teamB) ? match.teamB : expected.teamB;
+    const participantsChanged = match.teamA !== nextTeamA || match.teamB !== nextTeamB;
+    const metadataChanged = match.bracketRound !== expected.bracketRound
+      || match.roundLabel !== expected.roundLabel
+      || match.bestOf !== expected.bestOf;
+    if (!participantsChanged && !metadataChanged) return match;
+    const resetResult = participantsChanged && hasRecordedMatchResult(match);
+    return {
+      ...match,
+      teamA: nextTeamA,
+      teamB: nextTeamB,
+      phase: expected.phase,
+      bracketRound: expected.bracketRound,
+      roundLabel: expected.roundLabel,
+      bestOf: expected.bestOf,
+      ...(resetResult ? {
+        status: "scheduled" as const,
+        winner: undefined,
+        maps: [],
+        playedAt: undefined,
+        notes: undefined,
+      } : {}),
+    };
+  });
+}
+
+function restoreMissingMastersMatches(matches: MatchResult[], generatedMatches: MatchResult[]): MatchResult[] {
+  const generatedMasters = generatedMatches.filter((match) => isMastersPlayoffMatch(match));
+  if (generatedMasters.length === 0) return matches;
+  const generatedIds = new Set(generatedMasters.map((match) => match.id));
+  const existingById = new Map(matches.filter((match) => generatedIds.has(match.id)).map((match) => [match.id, match]));
+  const restoredMasters = generatedMasters.map((match) => existingById.get(match.id) ?? match);
+  const firstMastersIndex = matches.findIndex((match) => generatedIds.has(match.id));
+  if (firstMastersIndex < 0) return [...matches, ...restoredMasters];
+  return [
+    ...matches.slice(0, firstMastersIndex),
+    ...restoredMasters,
+    ...matches.slice(firstMastersIndex).filter((match) => !generatedIds.has(match.id)),
+  ];
+}
+
+function restoreMissingRegionalStageMatches(matches: MatchResult[], generatedMatches: MatchResult[]): MatchResult[] {
+  const generatedRegional = generatedMatches.filter((match) => isRegionalStagePlayoffMatch(match));
+  if (generatedRegional.length === 0) return matches;
+  const generatedIds = new Set(generatedRegional.map((match) => match.id));
+  const existingById = new Map(matches.filter((match) => generatedIds.has(match.id)).map((match) => [match.id, match]));
+  const restoredRegional = generatedRegional.map((match) => existingById.get(match.id) ?? match);
+  const firstRegionalIndex = matches.findIndex((match) => generatedIds.has(match.id));
+  if (firstRegionalIndex < 0) return [...matches, ...restoredRegional];
+  return [
+    ...matches.slice(0, firstRegionalIndex),
+    ...restoredRegional,
+    ...matches.slice(firstRegionalIndex).filter((match) => !generatedIds.has(match.id)),
+  ];
 }
 
 /**
  * Keep older drafts usable after schedule metadata was added. Missing phase
- * metadata is inferred, and a draft that predates Kickoff records receives
- * only the missing generated Kickoff records/configuration.
+ * metadata is inferred, and partial drafts receive missing generated Kickoff
+ * and Masters playoff records/configuration without replacing saved results.
  */
 export function hydrateDraftSchedule(
   generated: Pick<DraftPayload, "matches" | "tournaments">,
@@ -99,21 +334,43 @@ export function hydrateDraftSchedule(
   const draftMatches = draft?.matches?.length
     ? draft.matches.map(normalizeDraftMatch).filter((match) => !isLegacyMastersSwissMatch(match))
     : generated.matches;
-  const matches = draftMatches.some((match) => match.eventId === "kickoff")
-    ? draftMatches
-    : [...draftMatches, ...generated.matches.filter((match) => match.eventId === "kickoff")];
+  const migratedRegionalStageMatches = migrateLegacyRegionalStagePlayoffs(draftMatches, generated.matches, teams);
+  const matchesWithRegionalStageMigration = migrateRegionalStageLowerQuarterfinals(migratedRegionalStageMatches, generated.matches);
+  const matchesWithStage2PlayInMigration = migrateStage2InternationalPlayInBracket(matchesWithRegionalStageMigration, generated.matches);
+  const matchesWithChinaPlayInMigration = migrateStage2ChinaPlayInBracket(matchesWithStage2PlayInMigration, generated.matches);
+  const matchesWithRegionalStageMatches = restoreMissingRegionalStageMatches(matchesWithChinaPlayInMigration, generated.matches);
+  const matchesWithMasters = restoreMissingMastersMatches(matchesWithRegionalStageMatches, generated.matches);
+  const matches = matchesWithMasters.some((match) => match.eventId === "kickoff")
+    ? matchesWithMasters
+    : [...matchesWithMasters, ...generated.matches.filter((match) => match.eventId === "kickoff")];
 
   const draftById = new Map((draft?.tournaments ?? []).map((tournament) => [tournament.id, tournament]));
   const generatedIds = new Set(generated.tournaments.map((tournament) => tournament.id));
   const rawTournaments = [
-    ...generated.tournaments.map((tournament) => draftById.get(tournament.id) ?? tournament),
+    ...generated.tournaments.map((tournament) => {
+      const draftTournament = draftById.get(tournament.id);
+      if (!draftTournament) return tournament;
+      return {
+        ...tournament,
+        ...draftTournament,
+        stage2ChallengerTeamIds: draftTournament.stage2ChallengerTeamIds ?? tournament.stage2ChallengerTeamIds,
+        stage2NationalCupTeamIds: draftTournament.stage2NationalCupTeamIds ?? tournament.stage2NationalCupTeamIds,
+        stage2DirectPlayoffTeamIds: draftTournament.stage2DirectPlayoffTeamIds ?? tournament.stage2DirectPlayoffTeamIds,
+        stage2PlayInUpperGroupOrder: draftTournament.stage2PlayInUpperGroupOrder ?? tournament.stage2PlayInUpperGroupOrder,
+        stage2PlayInLowerGroupOrder: draftTournament.stage2PlayInLowerGroupOrder ?? tournament.stage2PlayInLowerGroupOrder,
+      };
+    }),
     ...(draft?.tournaments ?? []).filter((tournament) => !generatedIds.has(tournament.id)),
   ];
-  const tournaments = rawTournaments.map((tournament) => syncGroupRecordsWithGroups(tournament, matches));
-  if (!teams) return { matches, tournaments };
-  const syncedMatches = syncMastersQualificationMatches(matches, teams);
-  const syncedTournaments = syncMastersQualificationTournaments(tournaments, syncedMatches, teams);
-  return { matches: syncMastersSwissRecordMatches(syncedMatches, syncedTournaments), tournaments: syncedTournaments };
+  let configuredMatches = matches;
+  for (const tournament of rawTournaments) {
+    const synced = syncStage2InternationalPlayoffConfiguration(configuredMatches, tournament);
+    configuredMatches = synced.matches;
+  }
+  const tournaments = rawTournaments.map((tournament) => syncGroupRecordsWithGroups(tournament, configuredMatches));
+  if (!teams) return { matches: configuredMatches, tournaments };
+  const syncedTournaments = syncMastersQualificationTournaments(tournaments, configuredMatches, teams);
+  return { matches: configuredMatches, tournaments: syncedTournaments };
 }
 
 /**
@@ -179,7 +436,7 @@ export function syncGroupRecordsWithGroups(config: TournamentConfig, matches: Ma
   return { ...config, groupRecords };
 }
 
-export function createTournamentConfig(template: EventTemplate, teams: Team[], region?: RegionId): TournamentConfig {
+export function createTournamentConfig(template: EventTemplate, teams: Team[], region?: RegionId, challengerTeams: Team[] = []): TournamentConfig {
   const scope = template.scope;
   const mastersEventId = template.format === "swiss-plus-playoffs" ? template.id as MastersEventId : undefined;
   const mastersDirectSeeds = mastersEventId ? mastersDirectParticipantRefs(mastersEventId) : [];
@@ -190,6 +447,15 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
   const groups = template.format === "swiss-plus-playoffs"
     ? [{ id: "swiss", name: "Swiss Stage", teamIds: mastersSwissParticipants }]
     : groupConfigs(teamIds);
+  const stage2ExternalTeamIds = template.id === "stage-2" && region
+    ? challengerTeams.filter((team) => team.region === region).slice(0, region === "china" ? 2 : 4).map((team) => team.id)
+    : undefined;
+  const stage2ChallengerTeamIds = template.id === "stage-2" && region && region !== "china"
+    ? stage2ExternalTeamIds
+    : undefined;
+  const stage2NationalCupTeamIds = template.id === "stage-2" && region === "china"
+    ? stage2ExternalTeamIds
+    : undefined;
   return {
     id: `${template.id}-${scope === "international" ? "global" : region ?? "regional"}`,
     eventId: template.id,
@@ -203,6 +469,8 @@ export function createTournamentConfig(template: EventTemplate, teams: Team[], r
         ...Array.from({ length: 4 }, (_, index) => `swiss-pending:${template.id}:${index + 1}`),
       ] : template.format === "triple-elimination" ? tripleSeedSlots() : teamIds.slice(0, 8)),
     },
+    stage2ChallengerTeamIds,
+    stage2NationalCupTeamIds,
     groupRecords: template.format === "group-plus-playoffs" ? [] : undefined,
     swissRecords: template.format === "swiss-plus-playoffs" ? [] : undefined,
   };
@@ -323,13 +591,301 @@ export function rebuildRegionalGroupMatches(matches: MatchResult[], config: Tour
   return { matches: [...preservedNonGenerated, ...rebuilt], removedResults };
 }
 
+function regionalChinaBracketMatches(event: EventTemplate, region: RegionId, teamIds: string[]): MatchResult[] {
+  // CN Stage 1 uses the standard eight-team double-elimination bracket:
+  // every team starts in the upper quarterfinals, unlike the other regions'
+  // bracket variant where two teams start in the lower bracket and two teams
+  // receive upper-semifinal byes.
+  const slots = teamIds.slice(0, 8);
+  const matches: MatchResult[] = [];
+  const prefix = `${region}-${event.id}`;
+  const winnerRef = (suffix: string) => `winner:${prefix}-${suffix}`;
+  const loserRef = (suffix: string) => `loser:${prefix}-${suffix}`;
+  const seedRef = (index: number) => slots[index] ?? `seed:${index + 1}`;
+  const add = (suffix: string, teamA: string, teamB: string, bracketRound: string, roundLabel: string, bestOf: 3 | 5 = 3) => {
+    matches.push(emptyMatch({ id: `${prefix}-${suffix}`, event, region, stage: event.stage, phase: "playoffs", teamA, teamB, bracketRound, roundLabel, bestOf }));
+  };
+
+  for (let index = 0; index < 4; index += 1) {
+    add(`ub-qf-${index + 1}`, seedRef(index * 2), seedRef(index * 2 + 1), "Upper Bracket Quarterfinal", "淘汰赛 · 胜者组四分之一决赛");
+  }
+  for (let index = 0; index < 2; index += 1) {
+    add(`ub-sf-${index + 1}`, winnerRef(`ub-qf-${index * 2 + 1}`), winnerRef(`ub-qf-${index * 2 + 2}`), "Upper Bracket Semifinal", "淘汰赛 · 胜者组半决赛");
+  }
+  add("ub-final", winnerRef("ub-sf-1"), winnerRef("ub-sf-2"), "Upper Bracket Final", "淘汰赛 · 胜者组决赛");
+
+  for (let index = 0; index < 2; index += 1) {
+    add(`lb-r1-${index + 1}`, loserRef(`ub-qf-${index * 2 + 1}`), loserRef(`ub-qf-${index * 2 + 2}`), "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
+  }
+  add("lb-qf-1", winnerRef("lb-r1-1"), loserRef("ub-sf-2"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add("lb-qf-2", winnerRef("lb-r1-2"), loserRef("ub-sf-1"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add("lb-sf", winnerRef("lb-qf-1"), winnerRef("lb-qf-2"), "Lower Bracket Semifinal", "淘汰赛 · 败者组半决赛");
+  add("lb-final", loserRef("ub-final"), winnerRef("lb-sf"), "Lower Bracket Final", "淘汰赛 · 败者组决赛", 5);
+  add("grand-final", winnerRef("ub-final"), winnerRef("lb-final"), "Grand Final", "总决赛", 5);
+  return matches;
+}
+
+function stage2GroupRef(event: EventTemplate, region: RegionId, groupId: string, placement: number): string {
+  return `stage2-group:${event.id}:${region}:${groupId}:${placement}`;
+}
+
+function stage2ChallengerRef(region: RegionId, index: number): string {
+  return `stage2-challenger:${region}:${index}`;
+}
+
+function stage2NationalCupRef(index: number): string {
+  return `stage2-national-cup:china:${index}`;
+}
+
+function stage2InternationalPlayInMatches(event: EventTemplate, region: RegionId, challengerTeamIds: string[] = []): MatchResult[] {
+  const prefix = `${region}-${event.id}-play-in`;
+  const winnerRef = (suffix: string) => `winner:${prefix}-${suffix}`;
+  const loserRef = (suffix: string) => `loser:${prefix}-${suffix}`;
+  const groupRef = (groupId: string, placement: number) => stage2GroupRef(event, region, groupId, placement);
+  const challengerRef = (index: number) => challengerTeamIds[index - 1] ?? stage2ChallengerRef(region, index);
+  const matches: MatchResult[] = [];
+  const add = (suffix: string, teamA: string, teamB: string, bracketRound: string, bestOf: 3 | 5 = 3) => {
+    matches.push(emptyMatch({
+      id: `${prefix}-${suffix}`,
+      event,
+      region,
+      stage: event.stage,
+      phase: "playoffs",
+      teamA,
+      teamB,
+      bracketRound,
+      roundLabel: `Stage 2 · Play-In · ${bracketRound}`,
+      bestOf,
+    }));
+  };
+
+  // The four Challengers teams and the VCT teams placed fifth and sixth in
+  // each group start in Upper Round 1. Group third/fourth place teams enter
+  // Upper Round 2 with a bye.
+  add("ub-r1-1", groupRef("omega", 6), challengerRef(1), "Play-In Upper Bracket Round 1");
+  add("ub-r1-2", groupRef("alpha", 5), challengerRef(2), "Play-In Upper Bracket Round 1");
+  add("ub-r1-3", groupRef("alpha", 6), challengerRef(3), "Play-In Upper Bracket Round 1");
+  add("ub-r1-4", groupRef("omega", 5), challengerRef(4), "Play-In Upper Bracket Round 1");
+  add("ub-r2-1", groupRef("alpha", 3), winnerRef("ub-r1-1"), "Play-In Upper Bracket Round 2");
+  add("ub-r2-2", groupRef("omega", 4), winnerRef("ub-r1-2"), "Play-In Upper Bracket Round 2");
+  add("ub-r2-3", groupRef("omega", 3), winnerRef("ub-r1-3"), "Play-In Upper Bracket Round 2");
+  add("ub-r2-4", groupRef("alpha", 4), winnerRef("ub-r1-4"), "Play-In Upper Bracket Round 2");
+  add("ub-r3-1", winnerRef("ub-r2-1"), winnerRef("ub-r2-2"), "Play-In Upper Bracket Round 3");
+  add("ub-r3-2", winnerRef("ub-r2-3"), winnerRef("ub-r2-4"), "Play-In Upper Bracket Round 3");
+
+  // Lower Round 1 pairs each first-round loser with the loser from the
+  // opposite-side upper quarterfinal. The next two lower rounds keep those
+  // four branches in adjacent half-brackets; both Lower Round 3 winners
+  // qualify for the main Playoffs as Play-In placements three and four.
+  add("lb-r1-1", loserRef("ub-r2-4"), loserRef("ub-r1-1"), "Play-In Lower Bracket Round 1");
+  add("lb-r1-2", loserRef("ub-r2-3"), loserRef("ub-r1-2"), "Play-In Lower Bracket Round 1");
+  add("lb-r1-3", loserRef("ub-r2-2"), loserRef("ub-r1-3"), "Play-In Lower Bracket Round 1");
+  add("lb-r1-4", loserRef("ub-r2-1"), loserRef("ub-r1-4"), "Play-In Lower Bracket Round 1");
+  add("lb-r2-1", winnerRef("lb-r1-1"), winnerRef("lb-r1-2"), "Play-In Lower Bracket Round 2");
+  add("lb-r2-2", winnerRef("lb-r1-3"), winnerRef("lb-r1-4"), "Play-In Lower Bracket Round 2");
+  add("lb-r3-1", loserRef("ub-r3-1"), winnerRef("lb-r2-1"), "Play-In Lower Bracket Round 3");
+  add("lb-r3-2", loserRef("ub-r3-2"), winnerRef("lb-r2-2"), "Play-In Lower Bracket Round 3");
+
+  return matches;
+}
+
+function regionalChinaStage2Matches(event: EventTemplate, region: RegionId, nationalCupTeamIds: string[] = []): MatchResult[] {
+  const prefix = `${region}-${event.id}`;
+  const playInPrefix = `${prefix}-play-in`;
+  const winnerRef = (matchPrefix: string, suffix: string) => `winner:${matchPrefix}-${suffix}`;
+  const loserRef = (matchPrefix: string, suffix: string) => `loser:${matchPrefix}-${suffix}`;
+  const playInWinner = (suffix: string) => winnerRef(playInPrefix, suffix);
+  const playInLoser = (suffix: string) => loserRef(playInPrefix, suffix);
+  const playInSeed = (index: number) => stage2GroupRef(event, region, "play-in", index);
+  const nationalCupRef = (index: number) => nationalCupTeamIds[index - 1] ?? stage2NationalCupRef(index);
+  const directPlayoffSeed = (index: number) => stage2GroupRef(event, region, "playoff", index);
+  const matches: MatchResult[] = [];
+  const add = (id: string, teamA: string, teamB: string, bracketRound: string, roundLabel: string, bestOf: 3 | 5 = 3) => {
+    matches.push(emptyMatch({ id, event, region, stage: event.stage, phase: "playoffs", teamA, teamB, bracketRound, roundLabel, bestOf }));
+  };
+
+  // The ten-team CN Play-In has two Upper Round 1 matches, four Upper
+  // Quarterfinals and two Upper Semifinals. The two Upper Semifinal winners
+  // become Playoffs seeds 5 and 6. The lower bracket has three rounds, whose
+  // two winners become Playoffs seeds 7 and 8. CN does not use same-rank
+  // decider matches or an additional upper/lower final.
+  add(`${playInPrefix}-ub-r1-1`, playInSeed(1), nationalCupRef(1), "Play-In Upper Bracket Round 1", "Stage 2 · Play-In · 胜者组第 1 轮");
+  add(`${playInPrefix}-ub-r1-2`, playInSeed(2), nationalCupRef(2), "Play-In Upper Bracket Round 1", "Stage 2 · Play-In · 胜者组第 1 轮");
+  add(`${playInPrefix}-ub-r2-1`, playInWinner("ub-r1-1"), playInSeed(3), "Play-In Upper Bracket Round 2", "Stage 2 · Play-In · 胜者组第 2 轮");
+  add(`${playInPrefix}-ub-r2-2`, playInSeed(4), playInSeed(5), "Play-In Upper Bracket Round 2", "Stage 2 · Play-In · 胜者组第 2 轮");
+  add(`${playInPrefix}-ub-r2-3`, playInWinner("ub-r1-2"), playInSeed(6), "Play-In Upper Bracket Round 2", "Stage 2 · Play-In · 胜者组第 2 轮");
+  add(`${playInPrefix}-ub-r2-4`, playInSeed(7), playInSeed(8), "Play-In Upper Bracket Round 2", "Stage 2 · Play-In · 胜者组第 2 轮");
+  add(`${playInPrefix}-ub-r3-1`, playInWinner("ub-r2-1"), playInWinner("ub-r2-2"), "Play-In Upper Bracket Round 3", "Stage 2 · Play-In · 胜者组第 3 轮");
+  add(`${playInPrefix}-ub-r3-2`, playInWinner("ub-r2-3"), playInWinner("ub-r2-4"), "Play-In Upper Bracket Round 3", "Stage 2 · Play-In · 胜者组第 3 轮");
+  add(`${playInPrefix}-lb-r1-1`, playInLoser("ub-r1-1"), playInLoser("ub-r2-4"), "Play-In Lower Bracket Round 1", "Stage 2 · Play-In · 败者组第 1 轮");
+  add(`${playInPrefix}-lb-r1-2`, playInLoser("ub-r1-2"), playInLoser("ub-r2-2"), "Play-In Lower Bracket Round 1", "Stage 2 · Play-In · 败者组第 1 轮");
+  add(`${playInPrefix}-lb-r2-1`, playInLoser("ub-r2-3"), playInWinner("lb-r1-1"), "Play-In Lower Bracket Round 2", "Stage 2 · Play-In · 败者组第 2 轮");
+  add(`${playInPrefix}-lb-r2-2`, playInLoser("ub-r2-1"), playInWinner("lb-r1-2"), "Play-In Lower Bracket Round 2", "Stage 2 · Play-In · 败者组第 2 轮");
+  add(`${playInPrefix}-lb-r3-1`, playInLoser("ub-r3-1"), playInWinner("lb-r2-1"), "Play-In Lower Bracket Round 3", "Stage 2 · Play-In · 败者组第 3 轮");
+  add(`${playInPrefix}-lb-r3-2`, playInLoser("ub-r3-2"), playInWinner("lb-r2-2"), "Play-In Lower Bracket Round 3", "Stage 2 · Play-In · 败者组第 3 轮");
+  const playInPlacement = [
+    playInWinner("ub-r3-1"),
+    playInWinner("ub-r3-2"),
+    playInWinner("lb-r3-1"),
+    playInWinner("lb-r3-2"),
+  ];
+  for (let index = 0; index < 4; index += 1) {
+    add(`${prefix}-ub-qf-${index + 1}`, directPlayoffSeed(index + 1), playInPlacement[index] ?? `seed:${index + 1}`, "Upper Bracket Quarterfinal", "淘汰赛 · 胜者组四分之一决赛");
+  }
+  add(`${prefix}-ub-sf-1`, winnerRef(prefix, "ub-qf-1"), winnerRef(prefix, "ub-qf-2"), "Upper Bracket Semifinal", "淘汰赛 · 胜者组半决赛");
+  add(`${prefix}-ub-sf-2`, winnerRef(prefix, "ub-qf-3"), winnerRef(prefix, "ub-qf-4"), "Upper Bracket Semifinal", "淘汰赛 · 胜者组半决赛");
+  add(`${prefix}-ub-final`, winnerRef(prefix, "ub-sf-1"), winnerRef(prefix, "ub-sf-2"), "Upper Bracket Final", "淘汰赛 · 胜者组决赛");
+  add(`${prefix}-lb-r1-1`, loserRef(prefix, "ub-qf-1"), loserRef(prefix, "ub-qf-2"), "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
+  add(`${prefix}-lb-r1-2`, loserRef(prefix, "ub-qf-3"), loserRef(prefix, "ub-qf-4"), "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
+  add(`${prefix}-lb-qf-1`, winnerRef(prefix, "lb-r1-1"), loserRef(prefix, "ub-sf-2"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add(`${prefix}-lb-qf-2`, winnerRef(prefix, "lb-r1-2"), loserRef(prefix, "ub-sf-1"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add(`${prefix}-lb-sf`, winnerRef(prefix, "lb-qf-1"), winnerRef(prefix, "lb-qf-2"), "Lower Bracket Semifinal", "淘汰赛 · 败者组半决赛");
+  add(`${prefix}-lb-final`, loserRef(prefix, "ub-final"), winnerRef(prefix, "lb-sf"), "Lower Bracket Final", "淘汰赛 · 败者组决赛", 5);
+  add(`${prefix}-grand-final`, winnerRef(prefix, "ub-final"), winnerRef(prefix, "lb-final"), "Grand Final", "总决赛", 5);
+  return matches;
+}
+
+function stage2PairByGroupOrder(
+  first: string,
+  second: string,
+  order?: Stage2PlayInGroupOrder,
+): [string, string] {
+  return order === "alpha-first" ? [second, first] : [first, second];
+}
+
+/** Return the draw weights used by downstream Stage 2 probability consumers. */
+export function stage2PlayInGroupOrderProbabilities(order?: Stage2PlayInGroupOrder): Record<Stage2PlayInGroupOrder, number> {
+  if (!order) return { "alpha-first": 0.5, "omega-first": 0.5 };
+  return {
+    "alpha-first": order === "alpha-first" ? 1 : 0,
+    "omega-first": order === "omega-first" ? 1 : 0,
+  };
+}
+
+function regionalStage2Matches(
+  event: EventTemplate,
+  region: RegionId,
+  challengerTeamIds: string[] = [],
+  nationalCupTeamIds: string[] = [],
+  directPlayoffTeamIds: Array<string | null> = [],
+  upperGroupOrder?: Stage2PlayInGroupOrder,
+  lowerGroupOrder?: Stage2PlayInGroupOrder,
+): MatchResult[] {
+  if (region === "china") return regionalChinaStage2Matches(event, region, nationalCupTeamIds);
+  const playInMatches = stage2InternationalPlayInMatches(event, region, challengerTeamIds);
+  const prefix = `${region}-${event.id}`;
+  const playInPrefix = `${prefix}-play-in`;
+  const winnerRef = (suffix: string) => `winner:${prefix}-${suffix}`;
+  const loserRef = (suffix: string) => `loser:${prefix}-${suffix}`;
+  const playInWinner = (suffix: string) => `winner:${playInPrefix}-${suffix}`;
+  const groupRef = (groupId: string, placement: number) => stage2GroupRef(event, region, groupId, placement);
+  const matches: MatchResult[] = [...playInMatches];
+  const directRef = (index: number, groupId: string, placement: number) => directPlayoffTeamIds[index] || groupRef(groupId, placement);
+  const upperPlayInRefs = stage2PairByGroupOrder(playInWinner("ub-r3-1"), playInWinner("ub-r3-2"), upperGroupOrder);
+  const lowerPlayInRefs = stage2PairByGroupOrder(playInWinner("lb-r3-1"), playInWinner("lb-r3-2"), lowerGroupOrder);
+  const add = (suffix: string, teamA: string, teamB: string, bracketRound: string, roundLabel: string, bestOf: 3 | 5 = 3) => {
+    matches.push(emptyMatch({ id: `${prefix}-${suffix}`, event, region, stage: event.stage, phase: "playoffs", teamA, teamB, bracketRound, roundLabel, bestOf }));
+  };
+
+  add("ub-r1-1", directRef(0, "omega", 2), upperPlayInRefs[0], "Upper Bracket Round 1", "淘汰赛 · 胜者组第 1 轮");
+  add("ub-r1-2", directRef(1, "alpha", 2), upperPlayInRefs[1], "Upper Bracket Round 1", "淘汰赛 · 胜者组第 1 轮");
+  add("ub-sf-1", directRef(2, "alpha", 1), winnerRef("ub-r1-1"), "Upper Bracket Semifinal", "淘汰赛 · 胜者组半决赛");
+  add("ub-sf-2", directRef(3, "omega", 1), winnerRef("ub-r1-2"), "Upper Bracket Semifinal", "淘汰赛 · 胜者组半决赛");
+  add("lb-r1-1", loserRef("ub-r1-1"), lowerPlayInRefs[0], "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
+  add("lb-r1-2", loserRef("ub-r1-2"), lowerPlayInRefs[1], "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
+  add("lb-qf-1", loserRef("ub-sf-2"), winnerRef("lb-r1-1"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add("lb-qf-2", loserRef("ub-sf-1"), winnerRef("lb-r1-2"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add("ub-final", winnerRef("ub-sf-1"), winnerRef("ub-sf-2"), "Upper Bracket Final", "淘汰赛 · 胜者组决赛");
+  add("lb-sf", winnerRef("lb-qf-1"), winnerRef("lb-qf-2"), "Lower Bracket Semifinal", "淘汰赛 · 败者组半决赛");
+  add("lb-final", loserRef("ub-final"), winnerRef("lb-sf"), "Lower Bracket Final", "淘汰赛 · 败者组决赛", 5);
+  add("grand-final", winnerRef("ub-final"), winnerRef("lb-final"), "Grand Final", "总决赛", 5);
+  return matches;
+}
+
+/**
+ * Apply persisted non-CN Stage 2 direct slots and Play-in pair order to an
+ * existing draft without regenerating the whole regional schedule.
+ *
+ * An omitted pair order intentionally leaves the generated default in the
+ * visible bracket. The configuration remains undefined so consumers that
+ * calculate probabilities can treat the two Alpha/Omega assignments as a
+ * 50/50 draw instead of mistaking the display order for a confirmed draw.
+ */
+export function syncStage2InternationalPlayoffConfiguration(
+  matches: MatchResult[],
+  config: TournamentConfig,
+): { matches: MatchResult[]; changed: boolean } {
+  if (config.eventId !== "stage-2" || config.scope !== "regional") return { matches, changed: false };
+  const region = tournamentRegion(config, matches);
+  if (!region || region === "china") return { matches, changed: false };
+
+  const prefix = `${region}-stage-2`;
+  const playInPrefix = `${prefix}-play-in`;
+  const groupRef = (groupId: string, placement: number) => stage2GroupRef(eventTemplate("stage-2"), region, groupId, placement);
+  const winnerRef = (suffix: string) => `winner:${prefix}-${suffix}`;
+  const playInWinner = (suffix: string) => `winner:${playInPrefix}-${suffix}`;
+  const updates = new Map<string, Partial<Pick<MatchResult, "teamA" | "teamB">>>();
+  const addUpdate = (matchId: string, update: Partial<Pick<MatchResult, "teamA" | "teamB">>) => {
+    updates.set(matchId, { ...updates.get(matchId), ...update });
+  };
+
+  if (config.stage2DirectPlayoffTeamIds !== undefined) {
+    const directSlots = [
+      { suffix: "ub-r1-1", groupId: "omega", placement: 2, index: 0 },
+      { suffix: "ub-r1-2", groupId: "alpha", placement: 2, index: 1 },
+      { suffix: "ub-sf-1", groupId: "alpha", placement: 1, index: 2 },
+      { suffix: "ub-sf-2", groupId: "omega", placement: 1, index: 3 },
+    ];
+    for (const slot of directSlots) {
+      addUpdate(`${prefix}-${slot.suffix}`, {
+        teamA: config.stage2DirectPlayoffTeamIds[slot.index] || groupRef(slot.groupId, slot.placement),
+      });
+    }
+  }
+
+  // These four slots always come from Play-in. When the administrator has
+  // not fixed the Alpha/Omega order yet, use the generated default ordering;
+  // the probability layer will still treat that unset order as a 50/50 draw.
+  // Reapplying the references also repairs legacy drafts that still contain
+  // concrete VCT team IDs in these slots, which can put one team on both
+  // sides of the main bracket.
+  const [upperOmegaSlot, upperAlphaSlot] = stage2PairByGroupOrder(
+    playInWinner("ub-r3-1"),
+    playInWinner("ub-r3-2"),
+    config.stage2PlayInUpperGroupOrder,
+  );
+  addUpdate(`${prefix}-ub-r1-1`, { teamB: upperOmegaSlot });
+  addUpdate(`${prefix}-ub-r1-2`, { teamB: upperAlphaSlot });
+
+  const [lowerOmegaSlot, lowerAlphaSlot] = stage2PairByGroupOrder(
+    playInWinner("lb-r3-1"),
+    playInWinner("lb-r3-2"),
+    config.stage2PlayInLowerGroupOrder,
+  );
+  addUpdate(`${prefix}-lb-r1-1`, { teamB: lowerOmegaSlot });
+  addUpdate(`${prefix}-lb-r1-2`, { teamB: lowerAlphaSlot });
+
+  let changed = false;
+  const nextMatches = matches.map((match) => {
+    const update = updates.get(match.id);
+    if (!update || (update.teamA === undefined && update.teamB === undefined)) return match;
+    const teamA = update.teamA ?? match.teamA;
+    const teamB = update.teamB ?? match.teamB;
+    if (teamA === match.teamA && teamB === match.teamB) return match;
+    changed = true;
+    return { ...match, teamA, teamB };
+  });
+  return changed ? { matches: nextMatches, changed: true } : { matches, changed: false };
+}
+
 function regionalBracketMatches(event: EventTemplate, region: RegionId, teamIds: string[]): MatchResult[] {
-  // Stage 1/2 use the modified eight-team double-elimination bracket from the
-  // handbook: group winners receive an upper-semifinal bye, second/third
-  // seeds start in upper round 1, and fourth seeds start in lower round 1.
-  // The first-round participants remain editable in the result-entry view so
-  // an administrator can enter the official draw/seeding without relying on
-  // the roster order.
+  if (region === "china") return regionalChinaBracketMatches(event, region, teamIds);
+
+  // AMER/EMEA/PACIFIC Stage 1 uses the modified eight-team
+  // double-elimination bracket: two teams start in the lower bracket and two
+  // teams receive upper-semifinal byes. The first-round participants remain
+  // editable in the result-entry view so an administrator can enter the
+  // official draw/seeding without relying on the roster order.
   const slots = teamIds.slice(0, 8);
   const matches: MatchResult[] = [];
   const prefix = `${region}-${event.id}`;
@@ -346,8 +902,8 @@ function regionalBracketMatches(event: EventTemplate, region: RegionId, teamIds:
   add("ub-sf-2", seedRef(5), winnerRef("ub-r1-2"), "Upper Bracket Semifinal", "淘汰赛 · 胜者组半决赛");
   add("lb-r1-1", loserRef("ub-r1-1"), seedRef(6), "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
   add("lb-r1-2", loserRef("ub-r1-2"), seedRef(7), "Lower Bracket Round 1", "淘汰赛 · 败者组第 1 轮");
-  add("lb-qf-1", loserRef("ub-sf-1"), winnerRef("lb-r1-1"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
-  add("lb-qf-2", loserRef("ub-sf-2"), winnerRef("lb-r1-2"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add("lb-qf-1", loserRef("ub-sf-2"), winnerRef("lb-r1-1"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
+  add("lb-qf-2", loserRef("ub-sf-1"), winnerRef("lb-r1-2"), "Lower Bracket Quarterfinal", "淘汰赛 · 败者组四分之一决赛");
   add("ub-final", winnerRef("ub-sf-1"), winnerRef("ub-sf-2"), "Upper Bracket Final", "淘汰赛 · 胜者组决赛");
   add("lb-sf", winnerRef("lb-qf-1"), winnerRef("lb-qf-2"), "Lower Bracket Semifinal", "淘汰赛 · 败者组半决赛");
   add("lb-final", loserRef("ub-final"), winnerRef("lb-sf"), "Lower Bracket Final", "淘汰赛 · 败者组决赛", 5);
@@ -546,96 +1102,6 @@ export function applyTripleEliminationSeedOrder(matches: MatchResult[], config: 
   });
 }
 
-function resetMatchParticipants(match: MatchResult, teamA: string, teamB: string): MatchResult {
-  if (match.teamA === teamA && match.teamB === teamB) return match;
-  return {
-    ...match,
-    teamA,
-    teamB,
-    status: "scheduled",
-    winner: undefined,
-    maps: [],
-    playedAt: undefined,
-    notes: undefined,
-  };
-}
-
-/**
- * Rebind global Masters playoff slots after a regional result changes. Swiss
- * participants are stored on the tournament configuration, so no Swiss match
- * records are generated or rebound here.
- */
-export function syncMastersQualificationMatches(matches: MatchResult[], teams: Team[]): MatchResult[] {
-  let next = matches;
-  for (const eventId of ["masters-1", "masters-2"] as const) {
-    const allocations = calculateMastersAllocations(teams, next, eventId);
-    const placementTeamIds = new Map<string, string>();
-    for (const allocation of allocations) {
-      allocation.teamIdsByPlacement.forEach((teamId, index) => {
-        if (teamId) placementTeamIds.set(mastersQualificationRef(eventId, allocation.region, index + 1), teamId);
-      });
-    }
-    const hydrate = (reference: string): string => placementTeamIds.get(reference) ?? reference;
-
-    next = next.map((match) => {
-      if (match.eventId !== eventId || match.region !== "global") return match;
-      const playoffIndex = match.id.match(new RegExp(`^${eventId}-playoffs-ubqf-(\\d+)$`));
-      if (playoffIndex) {
-        const directPlacement = Number(playoffIndex[1]);
-        const region = REGION_IDS[directPlacement - 1];
-        if (!region) return match;
-        const expected = `seed:${hydrate(mastersQualificationRef(eventId, region, 1))}`;
-        return resetMatchParticipants(match, expected, match.teamB);
-      }
-      return match;
-    });
-  }
-  return next;
-}
-
-const SWISS_QUALIFYING_RECORDS: readonly SwissRecord[] = ["2-0", "2-1"];
-
-function swissParticipantIds(tournament: TournamentConfig): string[] {
-  const configured = tournament.groupStage?.groups.find((group) => group.id === "swiss")?.teamIds ?? [];
-  if (configured.length > 0) return [...new Set(configured)];
-  if (tournament.eventId === "masters-1" || tournament.eventId === "masters-2") {
-    return mastersSwissParticipantRefs(tournament.eventId);
-  }
-  return [];
-}
-
-/**
- * Replace the four Swiss qualification placeholders once every team has a
- * final 2-0/2-1/1-2/0-2 record. Partial records deliberately keep the
- * placeholders so an unfinished draft cannot be mistaken for a completed
- * qualification list.
- */
-export function syncMastersSwissRecordMatches(matches: MatchResult[], tournaments: TournamentConfig[]): MatchResult[] {
-  let next = matches;
-  for (const tournament of tournaments) {
-    if (tournament.scope !== "international" || tournament.format !== "swiss-plus-playoffs") continue;
-    const participantIds = swissParticipantIds(tournament);
-    const recordsByTeam = new Map((tournament.swissRecords ?? []).map((entry) => [entry.teamId, entry.record]));
-    const complete = participantIds.length === 8 && participantIds.every((teamId) => recordsByTeam.has(teamId));
-    const qualified = complete
-      ? participantIds.filter((teamId) => SWISS_QUALIFYING_RECORDS.includes(recordsByTeam.get(teamId) as SwissRecord))
-      : [];
-    const playoffMatches = next
-      .filter((match) => match.eventId === tournament.eventId && match.id.match(new RegExp(`^${tournament.eventId}-playoffs-ubqf-\\d+$`)))
-      .sort((left, right) => Number(left.id.match(/(\d+)$/)?.[1] ?? 0) - Number(right.id.match(/(\d+)$/)?.[1] ?? 0));
-    if (playoffMatches.length !== 4) continue;
-    const participants = qualified.length === 4
-      ? qualified
-      : playoffMatches.map((_, index) => `swiss-pending:${tournament.eventId}:${index + 1}`);
-    const participantByMatch = new Map(playoffMatches.map((match, index) => [match.id, participants[index]]));
-    next = next.map((match) => {
-      const teamB = participantByMatch.get(match.id);
-      return teamB ? resetMatchParticipants(match, match.teamA, teamB) : match;
-    });
-  }
-  return next;
-}
-
 /** Keep the read-only global tournament metadata aligned with resolved slots. */
 export function syncMastersQualificationTournaments(
   tournaments: TournamentConfig[],
@@ -697,12 +1163,12 @@ function internationalPlayoffMatches(event: EventTemplate): MatchResult[] {
   return matches;
 }
 
-export function createSchedule(region: RegionId, teams: Team[]): { matches: MatchResult[]; tournaments: TournamentConfig[] } {
+export function createSchedule(region: RegionId, teams: Team[], challengerTeams: Team[] = []): { matches: MatchResult[]; tournaments: TournamentConfig[] } {
   const regionalTeams = teams.filter((team) => team.region === region);
   const matches: MatchResult[] = [];
   const tournaments: TournamentConfig[] = [];
   for (const event of EVENT_TEMPLATES) {
-    const config = createTournamentConfig(event, teams, region);
+    const config = createTournamentConfig(event, teams, region, challengerTeams);
     tournaments.push(config);
     if (event.scope === "international") {
       matches.push(...internationalPlayoffMatches(event));
@@ -714,20 +1180,30 @@ export function createSchedule(region: RegionId, teams: Team[]): { matches: Matc
     const regionalTeamIds = regionalTeams.map((team) => team.id);
     matches.push(...(event.format === "triple-elimination"
       ? regionalTripleEliminationMatches(event, region, config.bracket?.teamRefs ?? [])
-      : regionalBracketMatches(event, region, regionalTeamIds)));
+      : event.id === "stage-2"
+        ? regionalStage2Matches(
+          event,
+          region,
+          config.stage2ChallengerTeamIds,
+          config.stage2NationalCupTeamIds,
+          config.stage2DirectPlayoffTeamIds,
+          config.stage2PlayInUpperGroupOrder,
+          config.stage2PlayInLowerGroupOrder,
+        )
+        : regionalBracketMatches(event, region, regionalTeamIds)));
   }
   return { matches, tournaments };
 }
 
-export function createFullSchedule(teams: Team[]): { matches: MatchResult[]; tournaments: TournamentConfig[] } {
+export function createFullSchedule(teams: Team[], challengerTeams: Team[] = []): { matches: MatchResult[]; tournaments: TournamentConfig[] } {
   const regionalMatches: MatchResult[] = [];
   const regionalTournaments: TournamentConfig[] = [];
   for (const region of ["amer", "emea", "pacific", "china"] as RegionId[]) {
-    const schedule = createSchedule(region, teams);
+    const schedule = createSchedule(region, teams, challengerTeams);
     regionalMatches.push(...schedule.matches.filter((match) => match.region !== "global"));
     regionalTournaments.push(...schedule.tournaments.filter((tournament) => tournament.scope === "regional"));
   }
-  const international = createSchedule("amer", teams);
+  const international = createSchedule("amer", teams, challengerTeams);
   return {
     matches: [...regionalMatches, ...international.matches.filter((match) => match.region === "global")],
     tournaments: [...regionalTournaments, ...international.tournaments.filter((tournament) => tournament.scope === "international")],

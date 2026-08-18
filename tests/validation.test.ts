@@ -20,6 +20,10 @@ describe("match validation", () => {
     expect(validateMatchResult(base).success).toBe(true);
   });
 
+  it("accepts a completed match without optional map rounds", () => {
+    expect(validateMatchResult({ ...base, maps: [] }).success).toBe(true);
+  });
+
   it("rejects a completed match without a winner", () => {
     expect(validateMatchResult({ ...base, winner: undefined }).success).toBe(false);
   });

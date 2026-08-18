@@ -1,4 +1,5 @@
 import { ENGINE_VERSION, compareRankingMetrics } from "../rules";
+import { sortByDescending } from "../sorting";
 import type {
   ExactProbability,
   QualificationMethod,
@@ -13,6 +14,7 @@ import type {
 export interface CountedScenario {
   count: bigint;
   methods: Record<string, QualificationMethod>;
+  stage2Placements: Record<string, number>;
   representativeResults: Record<string, string>;
 }
 
@@ -25,37 +27,29 @@ function probability(numerator: bigint, denominator: bigint): ExactProbability {
 }
 
 export function rankTeams(teams: SimulationTeam[], points: Map<string, number>): SimulationTeam[] {
-  const ranked = teams.slice().sort((left, right) => {
+  return teams.slice().sort((left, right) => {
     const pointsResult = (points.get(right.id) ?? 0) - (points.get(left.id) ?? 0);
     if (pointsResult !== 0) return pointsResult;
     return compareRankingMetrics(left.metrics, right.metrics, false) || left.id.localeCompare(right.id);
   });
-  for (let start = 0; start < ranked.length;) {
-    let end = start + 1;
-    while (
-      end < ranked.length &&
-      (points.get(ranked[start].id) ?? 0) === (points.get(ranked[end].id) ?? 0) &&
-      compareRankingMetrics(ranked[start].metrics, ranked[end].metrics, false) === 0
-    ) end += 1;
-    if (end - start === 2) {
-      const pair = ranked.slice(start, end).sort((left, right) => compareRankingMetrics(left.metrics, right.metrics, true) || left.id.localeCompare(right.id));
-      ranked.splice(start, 2, ...pair);
-    }
-    start = end;
-  }
-  return ranked;
 }
 
 function getPendingCount(matches: SimulationMatch[]): number {
   return matches.filter((match) => !match.winner).length;
 }
 
-function scenarioKey(qualifiers: string[], methods: Record<string, QualificationMethod>): string {
+function scenarioKey(qualifiers: string[], methods: Record<string, QualificationMethod>, stage2Placements: Record<string, number>): string {
   return qualifiers
     .slice()
     .sort()
-    .map((teamId) => `${teamId}:${methods[teamId]}`)
+    .map((teamId) => `${teamId}:${methods[teamId]}:${stage2Placements[teamId] ?? ""}`)
     .join("|");
+}
+
+export function championshipPointEligibleTeams(teams: SimulationTeam[], eligibleTeamIds?: string[]): SimulationTeam[] {
+  if (!eligibleTeamIds) return teams;
+  const eligible = new Set(eligibleTeamIds);
+  return teams.filter((team) => eligible.has(team.id));
 }
 
 export function addScenarioMaps(
@@ -67,7 +61,11 @@ export function addScenarioMaps(
     if (existing) {
       existing.count += value.count;
     } else {
-      target.set(key, { ...value, representativeResults: { ...value.representativeResults } });
+      target.set(key, {
+        ...value,
+        stage2Placements: { ...value.stage2Placements },
+        representativeResults: { ...value.representativeResults },
+      });
     }
   }
 }
@@ -77,17 +75,24 @@ function calculateFinalScenario(
   points: Map<string, number>,
   representativeResults: Record<string, string>,
 ): Map<string, CountedScenario> {
-  const teams = rankTeams(input.teams, points);
   const direct = new Set(input.directQualifiers);
-  const pointsQualifiers = teams.filter((team) => !direct.has(team.id)).slice(0, 2);
+  const pointsQualifiers = rankTeams(
+    championshipPointEligibleTeams(input.teams, input.championshipPointEligibleTeamIds)
+      .filter((team) => !direct.has(team.id)),
+    points,
+  ).slice(0, 2);
   const qualifiers = [...input.directQualifiers, ...pointsQualifiers.map((team) => team.id)];
+  const stage2Placements = Object.fromEntries([
+    ...input.directQualifiers.map((teamId, index) => [teamId, index + 1] as const),
+    ...pointsQualifiers.map((team, index) => [team.id, index + 3] as const),
+  ]);
   const methods: Record<string, QualificationMethod> = {
     [input.directQualifiers[0]]: "stage2-winner",
     [input.directQualifiers[1]]: "stage2-runner-up",
   };
   for (const team of pointsQualifiers) methods[team.id] = "championship-points";
-  const key = scenarioKey(qualifiers, methods);
-  return new Map([[key, { count: 1n, methods, representativeResults }]]);
+  const key = scenarioKey(qualifiers, methods, stage2Placements);
+  return new Map([[key, { count: 1n, methods, stage2Placements, representativeResults }]]);
 }
 
 function pointsForMatches(input: RegionSimulationInput, matches: SimulationMatch[]): Map<string, number> {
@@ -104,7 +109,7 @@ export function buildRegionAnalysis(
   scenarios: Map<string, CountedScenario>,
   totalOutcomes: bigint,
 ): RegionAnalysis {
-  const scenarioGroups: ScenarioGroup[] = [...scenarios.entries()]
+  const scenarioGroups: ScenarioGroup[] = sortByDescending([...scenarios.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value], index) => {
       const qualifiers = key.split("|").filter(Boolean).map((part) => part.split(":")[0]);
@@ -112,14 +117,15 @@ export function buildRegionAnalysis(
         id: `${input.region}-scenario-${index + 1}`,
         region: input.region,
         qualifiers,
+        stage2Placements: value.stage2Placements,
         methods: value.methods,
         probability: probability(value.count, totalOutcomes),
         outcomeCount: value.count.toString(),
         representativeResults: value.representativeResults,
       };
-    });
+    }), (scenario) => scenario.probability.percentage, (scenario) => scenario.id);
 
-  const teamProbabilities: TeamProbability[] = input.teams.map((team) => {
+  const teamProbabilities: TeamProbability[] = sortByDescending(input.teams.map((team) => {
     const groups = scenarioGroups.filter((scenario) => scenario.qualifiers.includes(team.id));
     const methods = Object.fromEntries(
       (["stage2-winner", "stage2-runner-up", "championship-points"] as QualificationMethod[]).map((method) => [
@@ -132,7 +138,7 @@ export function buildRegionAnalysis(
     ) as Record<QualificationMethod, ExactProbability>;
     const count = groups.reduce((total, group) => total + BigInt(group.outcomeCount), 0n);
     return { teamId: team.id, probability: probability(count, totalOutcomes), methods };
-  });
+  }), (item) => item.probability.percentage, (item) => item.teamId);
 
   return {
     region: input.region,

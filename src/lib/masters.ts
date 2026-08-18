@@ -61,7 +61,7 @@ function sourceMatchIds(eventId: MastersEventId, region: RegionId): string[] {
   return [
     `${region}-stage-1-grand-final`,
     `${region}-stage-1-grand-final`,
-    `${region}-stage-1-lower-final`,
+    `${region}-stage-1-lb-final`,
   ];
 }
 

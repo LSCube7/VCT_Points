@@ -4,6 +4,7 @@ import { cacheLife, cacheTag } from "next/cache";
 import { desc } from "drizzle-orm";
 import { publishedVersions } from "../../../db/schema";
 import { getDb } from "../db";
+import { sortByDescending } from "../sorting";
 
 /**
  * The repository starts without a database connection. This clearly labelled
@@ -30,15 +31,40 @@ export async function getPublishedSnapshot(): Promise<PublishedSnapshot> {
 
 export async function getRegion(region: RegionId) {
   const snapshot = await getPublishedSnapshot();
+  const publishedRoster = [...(snapshot.teams ?? []), ...(snapshot.challengerTeams ?? [])]
+    .filter((team) => team.region === region);
+  const teams = publishedRoster.length > 0 ? publishedRoster : demoTeams(region);
+  const teamIds = new Set(teams.map((team) => team.id));
+  const challengerIds = new Set((snapshot.challengerTeams ?? []).map((team) => team.id));
+  const analysis = snapshot.regions.find((item) => item.region === region) ?? {
+    region,
+    totalOutcomes: "0",
+    scenarioGroups: [],
+    teamProbabilities: [],
+    engineVersion: "pending",
+  };
+  const clusters = snapshot.clusters?.[region];
   return {
+    isPublished: snapshot.version !== "unpublished" && snapshot.version !== "preview-seed",
+    version: snapshot.version,
     metadata: regions.find((item) => item.id === region),
-    teams: demoTeams(region),
-    analysis: snapshot.regions.find((item) => item.region === region) ?? {
-      region,
-      totalOutcomes: "0",
-      scenarioGroups: [],
-      teamProbabilities: [],
-      engineVersion: "pending",
+    teams,
+    teamPoints: sortByDescending((snapshot.teamPoints ?? [])
+      .filter((item) => teamIds.has(item.teamId))
+      .map((item) => challengerIds.has(item.teamId) ? {
+        ...item,
+        total: 0,
+        breakdown: { kickoff: 0, masters1: 0, stage1: 0, masters2: 0, regularSeason: 0 },
+      } : item), (item) => item.total, (item) => item.teamId),
+    matches: (snapshot.matches ?? []).filter((match) => match.region === region),
+    clusters: clusters ? {
+      ...clusters,
+      clusters: sortByDescending(clusters.clusters, (cluster) => cluster.totalProbability, (cluster) => cluster.id),
+    } : undefined,
+    analysis: {
+      ...analysis,
+      scenarioGroups: sortByDescending(analysis.scenarioGroups, (scenario) => scenario.probability.percentage, (scenario) => scenario.id),
+      teamProbabilities: sortByDescending(analysis.teamProbabilities, (item) => item.probability.percentage, (item) => item.teamId),
     },
   };
 }

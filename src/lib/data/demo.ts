@@ -31,6 +31,26 @@ export function demoTeams(region: RegionId): Team[] {
   }));
 }
 
+/** Placeholder roster for the external Stage 2 Play-in entries. */
+export function demoChallengerTeams(region: RegionId): Team[] {
+  const isChina = region === "china";
+  const label = isChina ? "国家杯" : "Challengers";
+  const shortLabel = isChina ? "NC" : "CH";
+  return Array.from({ length: isChina ? 2 : 4 }, (_, index) => ({
+    id: `${region}-${isChina ? "national-cup" : "challenger"}-${index + 1}`,
+    region,
+    name: `${regionNames[region]} ${label} 待录入队伍 ${String(index + 1).padStart(2, "0")}`,
+    shortName: `${regionNames[region]}-${shortLabel}-${index + 1}`,
+    color: regions.find((item) => item.id === region)?.color ?? "#90a4ae",
+    active: true,
+    country: "",
+  }));
+}
+
+export function allDemoChallengerTeams(): Team[] {
+  return regions.flatMap(({ id }) => demoChallengerTeams(id));
+}
+
 export function demoSimulation(region: RegionId): RegionSimulationInput {
   const teams = demoTeams(region).slice(0, 8).map((team, index) => ({
     id: team.id,

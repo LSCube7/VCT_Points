@@ -7,7 +7,11 @@ import {
   mastersQualificationRef,
   mastersSwissParticipantIds,
 } from "../src/lib/masters";
-import { createFullSchedule, syncMastersQualificationMatches, syncMastersSwissRecordMatches } from "../src/lib/schedule";
+import {
+  createFullSchedule,
+  hydrateDraftSchedule,
+  syncMastersQualificationTournaments,
+} from "../src/lib/schedule";
 import type { MatchResult } from "../src/lib/types";
 
 function sourceMatch(id: string, teamA: string, teamB: string, winner: string): MatchResult {
@@ -62,7 +66,7 @@ describe("international Masters allocation", () => {
     const teams = allDemoTeams();
     const matches = ["amer", "emea", "pacific", "china"].flatMap((region) => [
       sourceMatch(`${region}-stage-1-grand-final`, `${region}-team-1`, `${region}-team-2`, `${region}-team-1`),
-      sourceMatch(`${region}-stage-1-lower-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
+      sourceMatch(`${region}-stage-1-lb-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
     ]);
     const allocations = calculateMastersAllocations(teams, matches, "masters-2");
 
@@ -91,7 +95,7 @@ describe("international Masters allocation", () => {
     ]);
   });
 
-  it("rebinds global slots when regional results are entered and preserves the global event", () => {
+  it("preserves all manually configured Masters opening slots after sources resolve", () => {
     const teams = allDemoTeams();
     const schedule = createFullSchedule(teams);
     const regionalResults = ["amer", "emea", "pacific", "china"].flatMap((region) => [
@@ -99,35 +103,62 @@ describe("international Masters allocation", () => {
       sourceMatch(`${region}-kickoff-mb-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
       sourceMatch(`${region}-kickoff-lb-final`, `${region}-team-5`, `${region}-team-6`, `${region}-team-5`),
     ]);
-    const synced = syncMastersQualificationMatches([
-      ...schedule.matches.filter((match) => match.region === "global"),
-      ...regionalResults,
-    ], teams);
-    const playoff = synced.find((match) => match.id === "masters-1-playoffs-ubqf-1");
-
-    expect(synced.some((match) => match.id.includes("-swiss-"))).toBe(false);
-    expect(playoff?.teamA).toBe("seed:amer-team-1");
-  });
-
-  it("places teams with 2-0 or 2-1 records into the Masters playoffs", () => {
-    const teams = allDemoTeams();
-    const schedule = createFullSchedule(teams);
-    const regionalResults = ["amer", "emea", "pacific", "china"].flatMap((region) => [
-      sourceMatch(`${region}-kickoff-ub-final`, `${region}-team-1`, `${region}-team-2`, `${region}-team-1`),
-      sourceMatch(`${region}-kickoff-mb-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
-      sourceMatch(`${region}-kickoff-lb-final`, `${region}-team-5`, `${region}-team-6`, `${region}-team-5`),
-    ]);
-    const matches = syncMastersQualificationMatches([
-      ...schedule.matches.filter((match) => match.region === "global"),
-      ...regionalResults,
-    ], teams);
-    const config = schedule.tournaments.find((tournament) => tournament.id === "masters-1-global");
+    const manualOpenings = [
+      ["emea-team-3", "pacific-team-5"],
+      ["china-team-3", "amer-team-5"],
+      ["pacific-team-3", "china-team-5"],
+      ["amer-team-3", "emea-team-5"],
+    ] as const;
+    const sourceById = new Map(regionalResults.map((match) => [match.id, match]));
+    const manualById = new Map(manualOpenings.map(([teamA, teamB], index) => [
+      `masters-1-playoffs-ubqf-${index + 1}`,
+      { teamA, teamB, status: "completed" as const, winner: teamA },
+    ]));
+    const draftMatches = schedule.matches.map((match) => {
+      const source = sourceById.get(match.id);
+      const manual = manualById.get(match.id);
+      return source ? source : manual ? { ...match, ...manual } : match;
+    });
+    const resolvedTournaments = syncMastersQualificationTournaments(schedule.tournaments, draftMatches, teams);
+    const config = resolvedTournaments.find((tournament) => tournament.id === "masters-1-global");
     if (!config) throw new Error("missing Masters config");
     const participants = config.groupStage?.groups[0]?.teamIds ?? [];
-    const withRecords = syncMastersSwissRecordMatches(matches, [{
-      ...config,
-      swissRecords: participants.map((teamId, index) => ({ teamId, record: index < 4 ? "2-1" as const : "1-2" as const })),
-    }]);
-    expect(withRecords.filter((match) => match.id.match(/masters-1-playoffs-ubqf-\d+$/)).map((match) => match.teamB)).toEqual(participants.slice(0, 4));
+    const tournamentsWithRecords = resolvedTournaments.map((tournament) => tournament.id === config.id
+      ? { ...tournament, swissRecords: participants.map((teamId, index) => ({ teamId, record: index < 4 ? "2-1" as const : "1-2" as const })) }
+      : tournament);
+    const hydrated = hydrateDraftSchedule(schedule, { matches: draftMatches, tournaments: tournamentsWithRecords }, teams);
+    const openings = hydrated.matches
+      .filter((match) => match.id.match(/masters-1-playoffs-ubqf-\d+$/))
+      .sort((left, right) => left.id.localeCompare(right.id, undefined, { numeric: true }));
+
+    expect(openings.map((match) => [match.teamA, match.teamB])).toEqual(manualOpenings);
+    expect(openings.every((match) => match.status === "completed" && match.winner === match.teamA)).toBe(true);
+  });
+
+  it("preserves manually entered Masters playoff results while sources are pending", () => {
+    const teams = allDemoTeams();
+    const schedule = createFullSchedule(teams);
+    const playoffId = "masters-2-playoffs-ubqf-1";
+    const draftMatches = schedule.matches.map((match) => match.id === playoffId
+      ? {
+        ...match,
+        teamA: "amer-team-1",
+        teamB: "emea-team-1",
+        status: "completed" as const,
+        winner: "amer-team-1",
+        maps: [{ map: "Abyss", teamARounds: 13, teamBRounds: 8 }],
+      }
+      : match);
+
+    const hydrated = hydrateDraftSchedule(schedule, { matches: draftMatches, tournaments: schedule.tournaments }, teams);
+    const restored = hydrated.matches.find((match) => match.id === playoffId);
+
+    expect(restored).toMatchObject({
+      teamA: "amer-team-1",
+      teamB: "emea-team-1",
+      status: "completed",
+      winner: "amer-team-1",
+      maps: [{ map: "Abyss", teamARounds: 13, teamBRounds: 8 }],
+    });
   });
 });

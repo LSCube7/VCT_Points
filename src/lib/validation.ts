@@ -48,6 +48,11 @@ const tournamentConfigSchema = z.object({
     startRound: z.enum(["quarterfinals", "semifinals"]),
     teamRefs: z.array(z.string().min(1)).max(32),
   }).optional(),
+  stage2ChallengerTeamIds: z.array(z.string().min(1)).max(4).optional(),
+  stage2NationalCupTeamIds: z.array(z.string().min(1)).max(2).optional(),
+  stage2DirectPlayoffTeamIds: z.array(z.union([z.string().min(1), z.null()])).max(4).optional(),
+  stage2PlayInUpperGroupOrder: z.enum(["alpha-first", "omega-first"]).optional(),
+  stage2PlayInLowerGroupOrder: z.enum(["alpha-first", "omega-first"]).optional(),
   swissRecords: z.array(z.object({
     teamId: z.string().min(1),
     record: z.enum(SWISS_RECORDS),
@@ -80,10 +85,22 @@ export const draftPayloadSchema = z.object({
   revision: z.number().int().positive(),
   matches: z.array(matchResultSchema),
   teams: z.array(teamSchema).default([]),
+  challengerTeams: z.array(teamSchema).default([]),
   tournaments: z.array(tournamentConfigSchema).default([]),
 });
 
 export function validateTournamentConfig(config: TournamentConfig) {
+  if (config.eventId === "stage-2" && config.scope === "regional" && config.id.endsWith("-china")) {
+    if (config.stage2DirectPlayoffTeamIds !== undefined || config.stage2PlayInUpperGroupOrder !== undefined || config.stage2PlayInLowerGroupOrder !== undefined) {
+      return { success: false as const, error: new Error("CN Stage 2 不使用外赛区主淘汰赛直通位和 Play-in 半区抽签配置") };
+    }
+  }
+  if (config.eventId === "stage-2" && config.scope === "regional" && !config.id.endsWith("-china")) {
+    const directIds = (config.stage2DirectPlayoffTeamIds ?? []).filter((teamId): teamId is string => Boolean(teamId));
+    if (new Set(directIds).size !== directIds.length) {
+      return { success: false as const, error: new Error("Stage 2 主淘汰赛直通位不能重复选择队伍") };
+    }
+  }
   if (config.format === "swiss-plus-playoffs") {
     const records = config.swissRecords ?? [];
     if (new Set(records.map((entry) => entry.teamId)).size !== records.length) {
@@ -145,10 +162,7 @@ export function validateMatchResult(value: unknown) {
   if (match.status === "forfeit" && !match.notes?.trim()) {
     return { success: false as const, error: new Error("弃权比赛必须填写原因") };
   }
-  if (match.status === "completed") {
-    if (match.maps.length === 0) {
-      return { success: false as const, error: new Error("正常完赛必须填写逐地图比分") };
-    }
+  if (match.status === "completed" && match.maps.length > 0) {
     const teamAMapWins = match.maps.filter((map) => map.teamARounds > map.teamBRounds).length;
     const teamBMapWins = match.maps.filter((map) => map.teamBRounds > map.teamARounds).length;
     if (match.maps.some((map) => map.teamARounds === map.teamBRounds)) {
