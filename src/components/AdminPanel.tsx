@@ -396,14 +396,14 @@ function BracketMatchCard({ match, teams, matchesById, onChange }: { match: Matc
   );
 }
 
-function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchResult[]; teams: Team[]; onChange: (id: string, update: Partial<MatchResult>) => void }) {
+function FirstRoundConfiguration({ matches, allMatches = matches, teams, matchesById, onChange }: { matches: MatchResult[]; allMatches?: MatchResult[]; teams: Team[]; matchesById: Map<string, MatchResult>; onChange: (id: string, update: Partial<MatchResult>) => void }) {
   const firstRound = firstRoundMatches(matches);
   if (firstRound.length === 0) return null;
 
   const teamById = new Map(teams.map((team) => [team.id, team]));
   function candidatesFor(match: MatchResult): Team[] {
     const internationalParticipants = eventTemplate(match.eventId).scope === "international"
-      ? new Set(mastersParticipantIds(teams, matches, match.eventId as "masters-1" | "masters-2"))
+      ? new Set(mastersParticipantIds(teams, allMatches, match.eventId as "masters-1" | "masters-2"))
       : undefined;
     return teams.filter((team) => team.active && (internationalParticipants ? internationalParticipants.has(team.id) : match.region === "global" || team.region === match.region));
   }
@@ -426,6 +426,16 @@ function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchR
             if (currentTeam) options.set(currentTeam.id, currentTeam);
           }
           const eventLabel = eventTemplate(match.eventId).label;
+          const renderParticipant = (value: string) => displayParticipant(value, teamById, matchesById);
+          const renderOptions = (side: "teamA" | "teamB") => {
+            const currentValue = match[side];
+            const otherValue = match[side === "teamA" ? "teamB" : "teamA"];
+            const items = [...options.values()].map((team) => <MenuItem key={`${match.id}-${side}-${team.id}`} value={team.id} disabled={team.id === otherValue}>{team.name}</MenuItem>);
+            if (!options.has(currentValue)) {
+              items.unshift(<MenuItem key={`${match.id}-${side}-current`} value={currentValue} disabled={currentValue === otherValue}>{renderParticipant(currentValue)}</MenuItem>);
+            }
+            return items;
+          };
           return (
             <Stack key={match.id} direction={{ xs: "column", md: "row" }} spacing={1} alignItems={{ md: "center" }}>
               <Box sx={{ minWidth: { md: 250 } }}>
@@ -434,18 +444,12 @@ function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchR
               </Box>
               <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 220 } }}>
                 <InputLabel id={`${match.id}-first-round-a-label`}>队伍 A</InputLabel>
-                <Select labelId={`${match.id}-first-round-a-label`} label="队伍 A" value={match.teamA} onChange={(event) => updateParticipant(match, "teamA", event.target.value)}>
-                  {[...options.values()].map((team) => <MenuItem key={team.id} value={team.id} disabled={team.id === match.teamB}>{team.name}</MenuItem>)}
-                  {!teamById.has(match.teamA) && <MenuItem value={match.teamA}>{displayParticipant(match.teamA, teamById)}</MenuItem>}
-                </Select>
+                <Select labelId={`${match.id}-first-round-a-label`} label="队伍 A" value={match.teamA} renderValue={(value) => renderParticipant(value as string)} onChange={(event) => updateParticipant(match, "teamA", event.target.value)}>{renderOptions("teamA")}</Select>
               </FormControl>
               <Typography color="text.secondary" sx={{ alignSelf: { xs: "center", md: "auto" } }}>vs</Typography>
               <FormControl size="small" sx={{ minWidth: { xs: "100%", md: 220 } }}>
                 <InputLabel id={`${match.id}-first-round-b-label`}>队伍 B</InputLabel>
-                <Select labelId={`${match.id}-first-round-b-label`} label="队伍 B" value={match.teamB} onChange={(event) => updateParticipant(match, "teamB", event.target.value)}>
-                  {[...options.values()].map((team) => <MenuItem key={team.id} value={team.id} disabled={team.id === match.teamA}>{team.name}</MenuItem>)}
-                  {!teamById.has(match.teamB) && <MenuItem value={match.teamB}>{displayParticipant(match.teamB, teamById)}</MenuItem>}
-                </Select>
+                <Select labelId={`${match.id}-first-round-b-label`} label="队伍 B" value={match.teamB} renderValue={(value) => renderParticipant(value as string)} onChange={(event) => updateParticipant(match, "teamB", event.target.value)}>{renderOptions("teamB")}</Select>
               </FormControl>
             </Stack>
           );
@@ -455,11 +459,11 @@ function FirstRoundConfiguration({ matches, teams, onChange }: { matches: MatchR
   );
 }
 
-function BracketBoard({ matches, teams, matchesById, onChange }: { matches: MatchResult[]; teams: Map<string, Team>; matchesById: Map<string, MatchResult>; onChange: (id: string, update: Partial<MatchResult>) => void }) {
+function BracketBoard({ matches, allMatches = matches, teams, matchesById, onChange }: { matches: MatchResult[]; allMatches?: MatchResult[]; teams: Map<string, Team>; matchesById: Map<string, MatchResult>; onChange: (id: string, update: Partial<MatchResult>) => void }) {
   const rounds = [...new Set(matches.map((match) => match.bracketRound ?? "淘汰赛"))].sort((left, right) => {
     return bracketRoundRank(left) - bracketRoundRank(right);
   });
-  return <Stack spacing={2}><FirstRoundConfiguration matches={matches} teams={[...teams.values()]} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{bracketRoundLabel(round)}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} matchesById={matchesById} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
+  return <Stack spacing={2}><FirstRoundConfiguration matches={matches} allMatches={allMatches} teams={[...teams.values()]} matchesById={matchesById} onChange={onChange} /><Box sx={{ overflowX: "auto", pb: 1 }}><Box sx={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(rounds.length, 1)}, minmax(280px, 1fr))`, gap: 2, minWidth: Math.max(rounds.length, 1) * 280 }}>{rounds.map((round) => <Box key={round}><Typography variant="subtitle2" color="text.secondary" mb={1}>{bracketRoundLabel(round)}</Typography>{matches.filter((match) => (match.bracketRound ?? "淘汰赛") === round).map((match) => <BracketMatchCard key={match.id} match={match} teams={teams} matchesById={matchesById} onChange={onChange} />)}</Box>)}</Box></Box></Stack>;
 }
 
 function TripleEliminationConfiguration({ config, teams, matches, migration, onChange, onMigrate, onOpenMatches }: { config: TournamentConfig; teams: Team[]; matches: MatchResult[]; migration: KickoffScheduleMigrationPreview; onChange: (config: TournamentConfig) => void; onMigrate?: () => void; onOpenMatches?: () => void }) {
@@ -761,7 +765,7 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
     <Card><CardContent>
       <Stack direction={{ xs: "column", md: "row" }} justifyContent="space-between" gap={2} mb={2}><Stack direction={{ xs: "column", sm: "row" }} spacing={1}><FormControl size="small" sx={{ minWidth: 130 }} disabled={visibleEvent?.scope === "international"}><InputLabel id="admin-region-label">范围</InputLabel><Select labelId="admin-region-label" label="范围" value={visibleEvent?.scope === "international" ? "global" : region} onChange={(event) => { if (event.target.value !== "global") setRegion(event.target.value as RegionId); }}>{visibleEvent?.scope === "international" && <MenuItem value="global">国际赛事</MenuItem>}{(["amer", "emea", "pacific", "china"] as RegionId[]).map((item) => <MenuItem key={item} value={item}>{regionLabels[item]}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 210 }}><InputLabel id="admin-event-label">赛事</InputLabel><Select labelId="admin-event-label" label="赛事" value={eventFilter} onChange={(event) => { setEventFilter(event.target.value); setPhaseFilter("all"); }}><MenuItem value="all">全年赛事</MenuItem>{EVENT_TEMPLATES.map((event) => <MenuItem key={event.id} value={event.id}>{event.label}{event.scope === "international" ? " · 国际" : " · 赛区"}</MenuItem>)}</Select></FormControl><FormControl size="small" sx={{ minWidth: 170 }}><InputLabel id="admin-phase-label">阶段</InputLabel><Select labelId="admin-phase-label" label="阶段" value={phaseFilter} onChange={(event) => setPhaseFilter(event.target.value as typeof phaseFilter)}><MenuItem value="all">全部阶段</MenuItem><MenuItem value="group">小组赛列表</MenuItem><MenuItem value="swiss">Swiss 队伍战绩</MenuItem><MenuItem value="playoffs">淘汰赛图</MenuItem></Select></FormControl></Stack><Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap><Button variant="outlined" startIcon={<Check />} onClick={() => runAction("validate")} disabled={isPending || draftLoadBlocked}>{copy.validate}</Button><Button variant="contained" startIcon={<Save />} onClick={() => runAction("save")} disabled={isPending || draftLoadBlocked}>{copy.saveDraft}</Button></Stack></Stack>
       <Tabs value={tab} onChange={(_, value: AdminTab) => setTab(value)} aria-label="赛事管理标签" sx={{ mb: 3 }}><Tab value="matches" label="赛果录入" icon={<Check />} iconPosition="start" /><Tab value="schedule" label="赛程配置" icon={<Groups />} iconPosition="start" /><Tab value="teams" label="队伍配置" icon={<ImageIcon />} iconPosition="start" /></Tabs>
-      {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛仍使用列表逐场录入，淘汰赛使用对阵图输入。Masters Swiss 只为每支队伍填写最终战绩（2-0、2-1、1-2、0-2），不录入抽签对阵、单场赛果或地图比分；填满后 2-0 和 2-1 的队伍会自动进入淘汰赛。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。草稿允许保留未完成赛果，请点击“保存草稿”手动保存。</Alert>{kickoffMigrationAlert}{visibleEvent?.scope === "international" && selectedConfig?.format === "swiss-plus-playoffs" && (phaseFilter === "all" || phaseFilter === "swiss") && <SwissRecordsConfiguration config={selectedConfig} matches={matches} teams={teams} onChange={updateTournament} />}{phaseFilter === "swiss" ? <Alert severity="info">Swiss 队伍最终战绩已在上方录入；该阶段不再维护抽签对阵。</Alert> : phaseFilter === "playoffs" ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛列表</Typography><GroupMatchList matches={listMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /></> : listMatches.length > 0 ? <GroupMatchList matches={listMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /> : bracketMatches.length > 0 ? <BracketBoard matches={bracketMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /> : <GroupMatchList matches={[]} teams={teamById} matchesById={matchesById} onChange={updateMatch} />}</Stack>}
+      {tab === "matches" && <Stack spacing={2}><Alert severity="info">小组赛仍使用列表逐场录入，淘汰赛使用对阵图输入。Masters Swiss 只为每支队伍填写最终战绩（2-0、2-1、1-2、0-2），不录入抽签对阵、单场赛果或地图比分；填满后 2-0 和 2-1 的队伍会自动进入淘汰赛。普通完赛必须填写每张地图的回合比分，弃权只填写原因，不填地图。草稿允许保留未完成赛果，请点击“保存草稿”手动保存。</Alert>{kickoffMigrationAlert}{visibleEvent?.scope === "international" && selectedConfig?.format === "swiss-plus-playoffs" && (phaseFilter === "all" || phaseFilter === "swiss") && <SwissRecordsConfiguration config={selectedConfig} matches={matches} teams={teams} onChange={updateTournament} />}{phaseFilter === "swiss" ? <Alert severity="info">Swiss 队伍最终战绩已在上方录入；该阶段不再维护抽签对阵。</Alert> : phaseFilter === "playoffs" ? <BracketBoard matches={bracketMatches.length > 0 ? bracketMatches : visibleMatches} allMatches={matches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /> : phaseFilter === "all" && bracketMatches.length > 0 && listMatches.length > 0 ? <><Typography variant="h6">小组赛列表</Typography><GroupMatchList matches={listMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /><Typography variant="h6" mt={2}>淘汰赛对阵图</Typography><BracketBoard matches={bracketMatches} allMatches={matches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /></> : listMatches.length > 0 ? <GroupMatchList matches={listMatches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /> : bracketMatches.length > 0 ? <BracketBoard matches={bracketMatches} allMatches={matches} teams={teamById} matchesById={matchesById} onChange={updateMatch} /> : <GroupMatchList matches={[]} teams={teamById} matchesById={matchesById} onChange={updateMatch} />}</Stack>}
       {tab === "schedule" && <Stack spacing={2}><Alert severity="info">Masters Santiago 和 Masters London 是不属于任何赛区的国际赛事：四赛区名额自动计算为各 3 队，Swiss 参赛队伍及最终战绩在“赛果录入”页维护，淘汰赛入口会自动更新，不需要填写抽签对阵。</Alert>{selectedConfig ? <ScheduleConfiguration config={selectedConfig} teams={teams} matches={matches} migration={kickoffMigration} onMigrate={migrateKickoff} onChange={updateTournament} onOpenMatches={() => { setEventFilter(selectedConfig.eventId); setPhaseFilter("playoffs"); setTab("matches"); }} /> : <Typography color="text.secondary">请选择赛事配置。</Typography>}</Stack>}
       {tab === "teams" && <TeamConfiguration teams={teams} onChange={updateTeams} />}
     </CardContent></Card>
