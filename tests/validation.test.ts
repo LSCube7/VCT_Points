@@ -27,6 +27,52 @@ describe("match validation", () => {
   it("allows scheduled matches without map data", () => {
     expect(validateMatchResult({ ...base, status: "scheduled", winner: undefined, maps: [] }).success).toBe(true);
   });
+
+  it("accepts a completed Swiss match with only a series score", () => {
+    expect(validateMatchResult({
+      ...base,
+      id: "swiss-1",
+      eventId: "masters-1",
+      region: "global",
+      stage: "masters-1",
+      phase: "swiss",
+      isRegularSeason: false,
+      winner: "a",
+      seriesScore: "2-1",
+      maps: [],
+    }).success).toBe(true);
+  });
+
+  it("requires a valid Swiss series score and matching winner", () => {
+    const swiss = {
+      ...base,
+      id: "swiss-2",
+      eventId: "masters-1",
+      region: "global" as const,
+      stage: "masters-1" as const,
+      phase: "swiss" as const,
+      isRegularSeason: false,
+      winner: "a",
+      maps: [],
+    };
+    expect(validateMatchResult(swiss).success).toBe(false);
+    expect(validateMatchResult({ ...swiss, seriesScore: "0-2", winner: "a" }).success).toBe(false);
+    expect(validateMatchResult({ ...swiss, seriesScore: "3-0" }).success).toBe(false);
+  });
+
+  it("rejects map details on a completed Swiss match", () => {
+    expect(validateMatchResult({
+      ...base,
+      id: "swiss-3",
+      eventId: "masters-1",
+      region: "global",
+      stage: "masters-1",
+      phase: "swiss",
+      isRegularSeason: false,
+      winner: "a",
+      seriesScore: "2-0",
+    }).success).toBe(false);
+  });
 });
 
 describe("tournament configuration validation", () => {

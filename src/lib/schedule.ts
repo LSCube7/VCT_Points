@@ -501,6 +501,7 @@ function resetMatchParticipants(match: MatchResult, teamA: string, teamB: string
     teamB,
     status: "scheduled",
     winner: undefined,
+    seriesScore: undefined,
     maps: [],
     playedAt: undefined,
     notes: undefined,
