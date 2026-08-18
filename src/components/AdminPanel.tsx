@@ -631,13 +631,18 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
 
   function applyMatchUpdates(updates: MatchUpdate[]) {
     const updateById = new Map(updates.map(({ id, update }) => [id, update]));
-    const nextMatches = syncMastersQualificationMatches(matches.map((match) => {
+    const changedQualificationSource = updates.some(({ id }) => {
+      const match = matches.find((candidate) => candidate.id === id);
+      return match?.eventId === "kickoff" || match?.eventId === "stage-1";
+    });
+    const updatedMatches = matches.map((match) => {
       const update = updateById.get(match.id);
       return update ? { ...match, ...update } : match;
-    }), teams);
+    });
+    const nextMatches = changedQualificationSource ? syncMastersQualificationMatches(updatedMatches, teams) : updatedMatches;
     const syncedTournaments = syncMastersQualificationTournaments(tournaments, nextMatches, teams);
     const hasSwissRecords = syncedTournaments.some((tournament) => tournament.format === "swiss-plus-playoffs" && (tournament.swissRecords?.length ?? 0) > 0);
-    setMatches(hasSwissRecords ? syncMastersSwissRecordMatches(nextMatches, syncedTournaments) : nextMatches);
+    setMatches(changedQualificationSource && hasSwissRecords ? syncMastersSwissRecordMatches(nextMatches, syncedTournaments) : nextMatches);
     setTournaments(syncedTournaments);
     markDraftChanged();
   }
