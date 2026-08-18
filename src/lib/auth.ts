@@ -149,8 +149,9 @@ export async function getAdminSession() {
     const session = rows[0];
     if (!session || session.expiresAt.getTime() <= Date.now()) return null;
     return session;
-  } catch {
-    return null;
+  } catch (error) {
+    if (error instanceof Error && error.message === "DATABASE_NOT_CONFIGURED") return null;
+    throw error;
   }
 }
 

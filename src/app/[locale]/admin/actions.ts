@@ -17,7 +17,7 @@ export interface AdminActionResult {
 
 export interface DraftLoadResult {
   ok: boolean;
-  code?: "DATABASE_NOT_CONFIGURED" | "UNAUTHORIZED" | "LOAD_FAILED";
+  code?: "DATABASE_NOT_CONFIGURED" | "UNAUTHORIZED" | "FORBIDDEN" | "LOAD_FAILED";
   message?: string;
   payload?: DraftPayload;
 }
@@ -86,8 +86,13 @@ export async function loadDraft(): Promise<DraftLoadResult> {
     return { ok: true, payload: parsed.data };
   } catch (error) {
     const message = error instanceof Error ? error.message : "草稿读取失败";
-    if (message === "UNAUTHORIZED" || message === "FORBIDDEN") return { ok: false, code: "UNAUTHORIZED", message: "请先使用有权限的 LSCube 账号登录" };
+    if (message === "UNAUTHORIZED") return { ok: false, code: "UNAUTHORIZED", message: "请先使用有权限的 LSCube 账号登录" };
+    if (message === "FORBIDDEN") return { ok: false, code: "FORBIDDEN", message: "当前账号没有赛事管理权限" };
     if (message === "DATABASE_NOT_CONFIGURED") return { ok: false, code: "DATABASE_NOT_CONFIGURED", message: "尚未连接 Neon 数据库；当前页面仅展示本地预览" };
+    console.error("[admin.loadDraft] " + JSON.stringify({
+      errorName: error instanceof Error ? error.name : "UnknownError",
+      errorMessage: redactErrorMessage(error),
+    }));
     return { ok: false, code: "LOAD_FAILED", message: "草稿读取失败，请稍后重试" };
   }
 }
