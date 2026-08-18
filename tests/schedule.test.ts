@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { allDemoTeams } from "../src/lib/data/demo";
 import { applyTripleEliminationSeedOrder, createFullSchedule, hydrateDraftSchedule, rebuildRegionalGroupMatches } from "../src/lib/schedule";
 import { validateMatchResult } from "../src/lib/validation";
+import type { MatchResult } from "../src/lib/types";
 
 describe("2026 schedule templates", () => {
   it("creates one global Masters schedule instead of one copy per region", () => {
@@ -173,22 +174,29 @@ describe("2026 schedule templates", () => {
     expect(hydrated.tournaments.some((tournament) => tournament.id === "kickoff-amer")).toBe(true);
   });
 
-  it("clears legacy per-match Swiss details during draft hydration", () => {
+  it("removes legacy Swiss draw matches during draft hydration", () => {
     const generated = createFullSchedule(allDemoTeams());
-    const target = generated.matches.find((match) => match.id === "masters-1-swiss-r1-1");
-    if (!target) throw new Error("missing Swiss match");
+    expect(generated.matches.some((match) => match.phase === "swiss")).toBe(false);
+    const legacy: MatchResult = {
+      id: "masters-1-swiss-r1-1",
+      eventId: "masters-1",
+      region: "global",
+      stage: "masters-1",
+      teamA: "qualified:masters-1:amer:2",
+      teamB: "qualified:masters-1:emea:3",
+      status: "completed",
+      winner: "qualified:masters-1:amer:2",
+      maps: [{ map: "Haven", teamARounds: 13, teamBRounds: 8 }],
+      isRegularSeason: false,
+      isTiebreaker: false,
+      phase: "swiss",
+      bestOf: 3,
+    };
     const hydrated = hydrateDraftSchedule(generated, {
-      matches: generated.matches.map((match) => match.id === target.id ? {
-        ...match,
-        status: "completed",
-        winner: match.teamA,
-        maps: [{ map: "Haven", teamARounds: 13, teamBRounds: 8 }],
-      } : match),
+      matches: [...generated.matches, legacy],
       tournaments: generated.tournaments,
     }, allDemoTeams());
-    const normalized = hydrated.matches.find((match) => match.id === target.id);
-    expect(normalized).toMatchObject({ status: "scheduled", maps: [] });
-    expect(normalized?.winner).toBeUndefined();
+    expect(hydrated.matches.some((match) => match.id === legacy.id)).toBe(false);
   });
 });
 

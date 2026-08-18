@@ -78,11 +78,16 @@ describe("international Masters allocation", () => {
     expect(config?.scope).toBe("international");
     expect(masters).not.toHaveLength(0);
     expect(new Set(masters.map((match) => match.region))).toEqual(new Set(["global"]));
-    expect(masters.filter((match) => match.id.includes("-swiss-r1-")).map((match) => [match.teamA, match.teamB])).toEqual([
-      [mastersQualificationRef("masters-1", "amer", 2), mastersQualificationRef("masters-1", "emea", 3)],
-      [mastersQualificationRef("masters-1", "emea", 2), mastersQualificationRef("masters-1", "pacific", 3)],
-      [mastersQualificationRef("masters-1", "pacific", 2), mastersQualificationRef("masters-1", "china", 3)],
-      [mastersQualificationRef("masters-1", "china", 2), mastersQualificationRef("masters-1", "amer", 3)],
+    expect(masters.some((match) => match.phase === "swiss")).toBe(false);
+    expect(config?.groupStage?.groups[0]?.teamIds).toEqual([
+      mastersQualificationRef("masters-1", "amer", 2),
+      mastersQualificationRef("masters-1", "amer", 3),
+      mastersQualificationRef("masters-1", "emea", 2),
+      mastersQualificationRef("masters-1", "emea", 3),
+      mastersQualificationRef("masters-1", "pacific", 2),
+      mastersQualificationRef("masters-1", "pacific", 3),
+      mastersQualificationRef("masters-1", "china", 2),
+      mastersQualificationRef("masters-1", "china", 3),
     ]);
   });
 
@@ -98,53 +103,10 @@ describe("international Masters allocation", () => {
       ...schedule.matches.filter((match) => match.region === "global"),
       ...regionalResults,
     ], teams);
-    const swiss = synced.find((match) => match.id === "masters-1-swiss-r1-1");
     const playoff = synced.find((match) => match.id === "masters-1-playoffs-ubqf-1");
 
-    expect([swiss?.teamA, swiss?.teamB]).toEqual(["amer-team-3", "emea-team-5"]);
+    expect(synced.some((match) => match.id.includes("-swiss-"))).toBe(false);
     expect(playoff?.teamA).toBe("seed:amer-team-1");
-  });
-
-  it("preserves a valid manual Swiss draw change", () => {
-    const teams = allDemoTeams();
-    const schedule = createFullSchedule(teams);
-    const regionalResults = ["amer", "emea", "pacific", "china"].flatMap((region) => [
-      sourceMatch(`${region}-kickoff-ub-final`, `${region}-team-1`, `${region}-team-2`, `${region}-team-1`),
-      sourceMatch(`${region}-kickoff-mb-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
-      sourceMatch(`${region}-kickoff-lb-final`, `${region}-team-5`, `${region}-team-6`, `${region}-team-5`),
-    ]);
-    const initial = syncMastersQualificationMatches([
-      ...schedule.matches.filter((match) => match.region === "global"),
-      ...regionalResults,
-    ], teams);
-    const changed = syncMastersQualificationMatches(initial.map((match) => match.id === "masters-1-swiss-r1-2" ? { ...match, teamA: "emea-team-3" } : match), teams);
-
-    expect(changed.find((match) => match.id === "masters-1-swiss-r1-2")?.teamA).toBe("emea-team-3");
-  });
-
-  it("keeps a two-match Swiss swap unique", () => {
-    const teams = allDemoTeams();
-    const schedule = createFullSchedule(teams);
-    const regionalResults = ["amer", "emea", "pacific", "china"].flatMap((region) => [
-      sourceMatch(`${region}-kickoff-ub-final`, `${region}-team-1`, `${region}-team-2`, `${region}-team-1`),
-      sourceMatch(`${region}-kickoff-mb-final`, `${region}-team-3`, `${region}-team-4`, `${region}-team-3`),
-      sourceMatch(`${region}-kickoff-lb-final`, `${region}-team-5`, `${region}-team-6`, `${region}-team-5`),
-    ]);
-    const initial = syncMastersQualificationMatches([
-      ...schedule.matches.filter((match) => match.region === "global"),
-      ...regionalResults,
-    ], teams);
-    const first = initial.find((match) => match.id === "masters-1-swiss-r1-2");
-    const second = initial.find((match) => match.id === "masters-1-swiss-r1-3");
-    if (!first || !second) throw new Error("missing Swiss matches");
-    const changed = syncMastersQualificationMatches(initial.map((match) => {
-      if (match.id === first.id) return { ...match, teamA: second.teamA };
-      if (match.id === second.id) return { ...match, teamA: first.teamA };
-      return match;
-    }), teams);
-
-    expect(changed.find((match) => match.id === first.id)?.teamA).toBe(second.teamA);
-    expect(changed.find((match) => match.id === second.id)?.teamA).toBe(first.teamA);
   });
 
   it("places teams with 2-0 or 2-1 records into the Masters playoffs", () => {
@@ -161,9 +123,7 @@ describe("international Masters allocation", () => {
     ], teams);
     const config = schedule.tournaments.find((tournament) => tournament.id === "masters-1-global");
     if (!config) throw new Error("missing Masters config");
-    const participants = matches
-      .filter((match) => match.eventId === "masters-1" && /-swiss-r1-\d+$/.test(match.id))
-      .flatMap((match) => [match.teamA, match.teamB]);
+    const participants = config.groupStage?.groups[0]?.teamIds ?? [];
     const withRecords = syncMastersSwissRecordMatches(matches, [{
       ...config,
       swissRecords: participants.map((teamId, index) => ({ teamId, record: index < 4 ? "2-1" as const : "1-2" as const })),
