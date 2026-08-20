@@ -22,6 +22,7 @@ import {
   Card,
   CardContent,
   Chip,
+  Checkbox,
   Container,
   Divider,
   FormControl,
@@ -57,7 +58,7 @@ import { sortByDescending } from "@/lib/sorting";
 import { applyTripleEliminationSeedOrder, createFullSchedule, EVENT_TEMPLATES, eventTemplate, hydrateDraftSchedule, MAP_POOL, rebuildRegionalGroupMatches, syncGroupRecordsWithGroups, syncMastersQualificationTournaments, syncStage2InternationalPlayoffConfiguration, tournamentRegion } from "@/lib/schedule";
 import { inspectKickoffScheduleMigration, migrateKickoffSchedule, type KickoffScheduleMigrationPreview } from "@/lib/schedule-migration";
 import type { PublishedClusterAnalysis, PublishedSnapshot, PublishedTeamPoints, RegionAnalysis } from "@/lib/types";
-import { SWISS_RECORDS } from "@/lib/types";
+import { REGION_IDS, SWISS_RECORDS } from "@/lib/types";
 import type { DraftPayload, GroupConfig, Locale, MatchResult, MatchStatus, RegionId, Stage2PlayInGroupOrder, SwissRecord, SwissTeamRecord, Team, TournamentConfig } from "@/lib/types";
 import { refreshPublishedCache, saveDraft, validateDraft } from "@/app/[locale]/admin/actions";
 
@@ -90,6 +91,8 @@ function formatPublishError(error: unknown): string {
   if (message === "PUBLISH_NETWORK_ERROR") return "发布请求未能连接服务，请检查网络后重试。（调试信息：PUBLISH_NETWORK_ERROR）";
   if (message === "DRAFT_REVISION_CONFLICT") return "草稿版本已变化，请刷新后台后重新计算并发布。（调试信息：DRAFT_REVISION_CONFLICT）";
   if (message === "PUBLISH_CHUNKS_INCOMPLETE") return "精确结果上传不完整，请重新发布。（调试信息：PUBLISH_CHUNKS_INCOMPLETE）";
+  if (message === "PUBLISH_BASE_SNAPSHOT_MISSING") return "当前还没有完整的已发布快照；首次发布请选择全部四个赛区。（调试信息：PUBLISH_BASE_SNAPSHOT_MISSING）";
+  if (message === "PUBLISH_BASE_SNAPSHOT_INVALID") return "当前已发布快照格式无效，无法进行赛区增量发布，请先检查历史发布数据。（调试信息：PUBLISH_BASE_SNAPSHOT_INVALID）";
   if (message === "UNAUTHORIZED") return "发布需要管理员登录，请先使用有权限的 LSCube 账号登录。（调试信息：UNAUTHORIZED）";
   if (message === "DATABASE_NOT_CONFIGURED") return "尚未连接 Neon 数据库，精确结果暂未同步。（调试信息：DATABASE_NOT_CONFIGURED）";
   if (message.startsWith("PUBLISH_DB_WRITE_FAILED")) return "数据库未接受发布快照，请检查发布表迁移状态后重试。（调试信息：" + message + "）";
@@ -140,7 +143,7 @@ async function publishSnapshotInChunks(snapshot: unknown, draftRevision: number)
       throw new Error("PUBLISH_NETWORK_ERROR");
     }
     const result = await response.json().catch(() => null) as { ok?: boolean; code?: string; message?: string; version?: string; jobId?: string } | null;
-    if (!response.ok || !result?.ok) throw new Error(result?.message ?? result?.code ?? "PUBLISH_REQUEST_FAILED");
+    if (!response.ok || !result?.ok) throw new Error(result?.code ?? result?.message ?? "PUBLISH_REQUEST_FAILED");
     return result;
   };
 
@@ -959,6 +962,7 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
     return { teams, challengerTeams, ...hydrateDraftSchedule(generated, initialDraft, teams) };
   }, [initialDraft]);
   const [region, setRegion] = useState<RegionId>("amer");
+  const [publishRegions, setPublishRegions] = useState<RegionId[]>(() => [...REGION_IDS]);
   const [teams, setTeams] = useState<Team[]>(() => initial.teams);
   const [challengerTeams, setChallengerTeams] = useState<Team[]>(() => initial.challengerTeams);
   const [matches, setMatches] = useState<MatchResult[]>(() => initial.matches);
@@ -1223,7 +1227,7 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
     }
   }
 
-  async function publishAllRegionAnalyses() {
+  async function publishSelectedRegionAnalyses() {
     if (draftLoadBlocked) {
       setPublishError(draftLoadMessage ?? "草稿尚未成功读取，请刷新页面后重试。");
       setPublishState("error");
@@ -1234,7 +1238,18 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
       setPublishState("error");
       return;
     }
-    if (typeof window !== "undefined" && !window.confirm("将重新计算四个赛区，并替换公开页面当前的精确结果。确认发布吗？")) return;
+    if (publishRegions.length === 0) {
+      setPublishError("请至少选择一个赛区后再发布精确结果。");
+      setPublishState("error");
+      return;
+    }
+
+    const regionsToPublish = [...publishRegions];
+    const selectedRegionText = regionsToPublish.map((item) => regionLabels[item]).join("、");
+    const confirmMessage = regionsToPublish.length === REGION_IDS.length
+      ? "将重新计算四个赛区，并替换公开页面当前的精确结果。确认发布吗？"
+      : `将重新计算并发布 ${selectedRegionText}，未选赛区沿用上次已发布结果。确认发布吗？`;
+    if (typeof window !== "undefined" && !window.confirm(confirmMessage)) return;
 
     const regionAtStart = region;
     setPublishState("running");
@@ -1245,7 +1260,7 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
       const clustersByRegion: Partial<Record<RegionId, PublishedClusterAnalysis>> = {};
       const publicMatches = new Map<string, MatchResult>();
       let currentRegionInput: DraftRegionSimulation | null = null;
-      for (const targetRegion of ["amer", "emea", "pacific", "china"] as RegionId[]) {
+      for (const targetRegion of regionsToPublish) {
         const draftSimulation = buildDraftRegionSimulation({ region: targetRegion, teams, challengerTeams, matches, tournaments });
         const result = await runBracketWorker(draftSimulation.input).promise;
         nextAnalyses[targetRegion] = result;
@@ -1258,9 +1273,9 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
         if (targetRegion === regionAtStart) currentRegionInput = draftSimulation;
       }
 
-      const regionAnalyses = (["amer", "emea", "pacific", "china"] as RegionId[]).map((item) => nextAnalyses[item]);
+      const regionAnalyses = regionsToPublish.map((item) => nextAnalyses[item]);
       const completeRegionAnalyses = regionAnalyses.filter((item): item is RegionAnalysis => Boolean(item));
-      if (completeRegionAnalyses.length !== 4) throw new Error("ANALYSIS_REGIONS_INCOMPLETE");
+      if (completeRegionAnalyses.length !== regionsToPublish.length) throw new Error("ANALYSIS_REGIONS_INCOMPLETE");
       const publishedRegions = completeRegionAnalyses.map((item) => ({
         ...item,
         scenarioGroups: sortByDescending(item.scenarioGroups, (scenario) => scenario.probability.percentage, (scenario) => scenario.id),
@@ -1279,11 +1294,11 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
         clusters: clustersByRegion,
       };
       const result = await publishSnapshotInChunks(snapshot, revision);
-      setAnalysisByRegion(nextAnalyses);
+      setAnalysisByRegion((current) => ({ ...current, ...nextAnalyses }));
       setAnalysis(nextAnalyses[regionAtStart] ?? null);
       setAnalysisInput(currentRegionInput);
       setPublishState("done");
-      setMessage({ severity: "success", text: "四个赛区的精确结果已同步到公开页面" + (result.version ? "，版本 " + result.version : "。") });
+      setMessage({ severity: "success", text: `${selectedRegionText} 的精确结果已重新计算并同步到公开页面${regionsToPublish.length < REGION_IDS.length ? "，其他赛区沿用上次已发布结果" : ""}${result.version ? "，版本 " + result.version : "。"}` });
     } catch (error) {
       setPublishError(formatPublishError(error));
       setPublishState("error");
@@ -1370,10 +1385,16 @@ export function AdminPanel({ locale, initialDraft, draftLoadError }: { locale: L
           <Typography variant="body2" color="text.secondary" mt={1}>计算会直接读取当前草稿的队伍、Stage 2 完整淘汰赛图和已录入赛果；未完成系列赛按 50/50 枚举，并沿胜者 / 败者引用推演到 Stage 2 总决赛。</Typography>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} mt={2}>
             <Button variant="contained" startIcon={<PlayArrow />} onClick={runCalculation} disabled={analysisState === "running" || publishState === "running" || draftLoadBlocked}>{analysisState === "running" ? "计算中…" : "启动预览计算"}</Button>
-            <Button variant="outlined" startIcon={<UploadFile />} onClick={publishAllRegionAnalyses} disabled={analysisState === "running" || publishState === "running" || draftLoadBlocked}>{publishState === "running" ? "计算四赛区并发布中…" : "发布精确结果到公开页面"}</Button>
+            <Button variant="outlined" startIcon={<UploadFile />} onClick={publishSelectedRegionAnalyses} disabled={analysisState === "running" || publishState === "running" || draftLoadBlocked || publishRegions.length === 0}>{publishState === "running" ? `计算 ${publishRegions.length} 个赛区并发布中…` : "发布选中赛区精确结果"}</Button>
             <Button variant="text" onClick={refreshPublicPublishedCache} disabled={isPending || cacheRefreshState === "running"}>{cacheRefreshState === "running" ? "刷新中…" : "只刷新公开页缓存"}</Button>
           </Stack>
-          <Typography variant="caption" color="text.secondary" display="block" mt={1}>发布会重新计算四个赛区，并替换公开页面当前快照；请先保存草稿。</Typography>
+          <Stack spacing={0.5} mt={2}>
+            <Typography variant="body2" fontWeight={700}>本次发布赛区（可多选）</Typography>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={{ xs: 0, sm: 1 }}>
+              {REGION_IDS.map((item) => <FormControlLabel key={item} control={<Checkbox size="small" checked={publishRegions.includes(item)} disabled={publishState === "running"} onChange={(event) => setPublishRegions((current) => event.target.checked ? [...new Set([...current, item])] : current.filter((regionItem) => regionItem !== item))} />} label={regionLabels[item]} />)}
+            </Stack>
+            <Typography variant="caption" color="text.secondary">只重新计算并发布选中的赛区；未选赛区沿用上次已发布结果。首次发布需要选择全部四个赛区；请先保存草稿。</Typography>
+          </Stack>
           {analysisState === "error" && <Alert severity="error" sx={{ mt: 2 }}>计算失败：{analysisError ?? "请检查当前草稿配置后重试。"}</Alert>}
           {publishState === "error" && <Alert severity="error" sx={{ mt: 2 }}>发布失败：{publishError ?? "请检查当前草稿、数据库连接和管理员权限后重试。"}</Alert>}
           {analysisResultView}

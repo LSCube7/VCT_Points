@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { asc, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { analysisChunks, analysisJobs, draftVersions } from "../../../../../db/schema";
+import { analysisChunks, analysisJobs, draftVersions, publishedVersions } from "../../../../../db/schema";
 import { requireAdmin } from "@/lib/auth";
 import { getDb } from "@/lib/db";
 import { publishChunkedSnapshot } from "@/lib/publish";
+import { mergePublishedSnapshot } from "@/lib/published-snapshot";
 import { draftPayloadSchema } from "@/lib/validation";
 
 const createSchema = z.object({
@@ -29,6 +30,7 @@ const finalizeSchema = z.object({
 });
 
 const requestSchema = z.discriminatedUnion("type", [createSchema, chunkSchema, finalizeSchema]);
+const publishChunkSize = 96_000;
 
 function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -126,6 +128,39 @@ export async function POST(request: Request) {
     } catch {
       await db.update(analysisJobs).set({ status: "failed" }).where(eq(analysisJobs.id, parsed.data.jobId));
       return errorResponse("VALIDATION_ERROR", "精确结果数据不完整，请重试发布", 422);
+    }
+
+    const partialRegionCount = snapshot && typeof snapshot === "object" && Array.isArray((snapshot as { regions?: unknown }).regions)
+      ? (snapshot as { regions: unknown[] }).regions.length
+      : 0;
+    if (partialRegionCount > 0 && partialRegionCount < 4) {
+      const latestPublished = await db
+        .select({ snapshot: publishedVersions.snapshot })
+        .from(publishedVersions)
+        .where(eq(publishedVersions.seasonId, "vct-2026"))
+        .orderBy(desc(publishedVersions.publishedAt))
+        .limit(1);
+      if (!latestPublished[0]?.snapshot) {
+        await db.update(analysisJobs).set({ status: "failed" }).where(eq(analysisJobs.id, parsed.data.jobId));
+        return errorResponse("PUBLISH_BASE_SNAPSHOT_MISSING", "当前还没有完整的已发布快照，首次发布请选择全部四个赛区", 409);
+      }
+      const merged = mergePublishedSnapshot(latestPublished[0].snapshot, snapshot);
+      if (!merged.ok) {
+        await db.update(analysisJobs).set({ status: "failed" }).where(eq(analysisJobs.id, parsed.data.jobId));
+        return errorResponse(merged.code, merged.message, 422);
+      }
+      snapshot = merged.snapshot;
+      const mergedSerializedSnapshot = JSON.stringify(merged.snapshot);
+      const mergedChunks = Array.from(
+        { length: Math.ceil(mergedSerializedSnapshot.length / publishChunkSize) },
+        (_, index) => mergedSerializedSnapshot.slice(index * publishChunkSize, (index + 1) * publishChunkSize),
+      );
+      await db.delete(analysisChunks).where(eq(analysisChunks.jobId, parsed.data.jobId));
+      await db.insert(analysisChunks).values(mergedChunks.map((text, chunkIndex) => ({
+        jobId: job.id,
+        chunkIndex,
+        payload: { text },
+      })));
     }
 
     const result = await publishChunkedSnapshot(snapshot, job.inputHash, parsed.data.jobId);

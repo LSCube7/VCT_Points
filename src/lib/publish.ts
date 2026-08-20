@@ -4,104 +4,8 @@ import { createHash } from "node:crypto";
 import { getSql } from "./db";
 import { requireAdmin } from "./auth";
 import { invalidatePublishedCache } from "./publish-cache";
-import { z } from "zod";
+import { publishedSnapshotSchema, validatePublishedProbabilityMass } from "./published-snapshot";
 import type { PublishedSnapshot } from "./types";
-
-const probabilitySchema = z.object({
-  numerator: z.string().regex(/^\d+$/),
-  denominator: z.string().regex(/^\d+$/),
-  percentage: z.number().min(0).max(100),
-});
-
-const regionAnalysisSchema = z.object({
-  region: z.enum(["amer", "emea", "pacific", "china"]),
-  totalOutcomes: z.string().regex(/^\d+$/),
-  scenarioGroups: z.array(z.object({
-    id: z.string(),
-    region: z.enum(["amer", "emea", "pacific", "china"]),
-    qualifiers: z.array(z.string()).length(4),
-    stage2Placements: z.record(z.string(), z.number().int().min(1).max(4)).optional(),
-    methods: z.record(z.string()),
-    probability: probabilitySchema,
-    outcomeCount: z.string().regex(/^\d+$/),
-    representativeResults: z.record(z.string()),
-  })),
-  teamProbabilities: z.array(z.object({
-    teamId: z.string(),
-    probability: probabilitySchema,
-    methods: z.record(probabilitySchema),
-  })),
-  engineVersion: z.string(),
-});
-
-const publishedTeamSchema = z.object({
-  id: z.string(),
-  region: z.enum(["amer", "emea", "pacific", "china"]),
-  name: z.string(),
-  shortName: z.string(),
-  color: z.string(),
-  active: z.boolean(),
-  country: z.string().optional(),
-  logoUrl: z.string().optional(),
-});
-
-const publishedTeamPointsSchema = z.object({
-  teamId: z.string(),
-  total: z.number(),
-  breakdown: z.object({
-    kickoff: z.number(),
-    masters1: z.number(),
-    stage1: z.number(),
-    masters2: z.number(),
-    regularSeason: z.number(),
-  }),
-});
-
-const publishedMatchSchema = z.object({
-  id: z.string(),
-  eventId: z.string(),
-  region: z.enum(["amer", "emea", "pacific", "china", "global"]),
-  stage: z.enum(["kickoff", "masters-1", "stage-1", "masters-2", "stage-2", "champions"]),
-  teamA: z.string(),
-  teamB: z.string(),
-  status: z.enum(["scheduled", "completed", "forfeit", "cancelled"]),
-  winner: z.string().optional(),
-  maps: z.array(z.object({ map: z.string(), teamARounds: z.number(), teamBRounds: z.number() })),
-  isRegularSeason: z.boolean(),
-  isTiebreaker: z.boolean(),
-  playedAt: z.string().optional(),
-  notes: z.string().optional(),
-  phase: z.enum(["group", "swiss", "playoffs"]).optional(),
-  groupId: z.string().optional(),
-  roundLabel: z.string().optional(),
-  bracketRound: z.string().optional(),
-  bestOf: z.union([z.literal(3), z.literal(5)]).optional(),
-});
-
-const publishedClusterSchema = z.object({
-  id: z.string(),
-  scenarioIds: z.array(z.string()),
-  totalProbability: z.number().min(0).max(1),
-  medoidScenarioId: z.string(),
-});
-
-const publishedClusterAnalysisSchema = z.object({
-  recommendedK: z.number().int().nonnegative(),
-  clusters: z.array(publishedClusterSchema),
-  scores: z.record(z.string(), z.number()),
-});
-
-const snapshotSchema = z.object({
-  version: z.string(),
-  publishedAt: z.string(),
-  dataCutoff: z.string(),
-  regions: z.array(regionAnalysisSchema).length(4),
-  teams: z.array(publishedTeamSchema).optional(),
-  challengerTeams: z.array(publishedTeamSchema).optional(),
-  teamPoints: z.array(publishedTeamPointsSchema).optional(),
-  matches: z.array(publishedMatchSchema).optional(),
-  clusters: z.record(z.enum(["amer", "emea", "pacific", "china"]), publishedClusterAnalysisSchema).optional(),
-});
 
 export interface PublishResult {
   ok: boolean;
@@ -121,24 +25,11 @@ function databaseErrorField(error: unknown, field: string): string | undefined {
   return undefined;
 }
 
-function validateProbabilityMass(snapshot: PublishedSnapshot): string | null {
-  const seen = new Set<string>();
-  for (const region of snapshot.regions) {
-    if (seen.has(region.region)) return `重复赛区：${region.region}`;
-    seen.add(region.region);
-    const denominator = BigInt(region.totalOutcomes);
-    const groupMass = region.scenarioGroups.reduce((total, group) => total + BigInt(group.outcomeCount), 0n);
-    if (groupMass !== denominator) return `${region.region} 情景概率总和不等于总事件数`;
-    if (region.scenarioGroups.some((group) => new Set(group.qualifiers).size !== 4)) return `${region.region} 存在重复晋级队伍`;
-  }
-  return seen.size === 4 ? null : "必须包含四个赛区";
-}
-
 function parseSnapshot(snapshotInput: unknown): { ok: true; snapshot: PublishedSnapshot } | { ok: false; result: PublishResult } {
-  const parsed = snapshotSchema.safeParse(snapshotInput);
+  const parsed = publishedSnapshotSchema.safeParse(snapshotInput);
   if (!parsed.success) return { ok: false, result: { ok: false, code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "发布数据格式错误" } };
   const snapshot = parsed.data as PublishedSnapshot;
-  const massError = validateProbabilityMass(snapshot);
+  const massError = validatePublishedProbabilityMass(snapshot);
   if (massError) return { ok: false, result: { ok: false, code: "VALIDATION_ERROR", message: massError } };
   return { ok: true, snapshot };
 }
